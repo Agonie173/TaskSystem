@@ -13,6 +13,8 @@ namespace EPathFollowingResult
 }
 
 class APawn;
+class AAIController;
+class UAudioComponent;
 class USoundBase;
 class UAnimSequenceBase;
 
@@ -142,6 +144,20 @@ private:
 
 	int32 CurrentBehaviorIndex = -1;
 
+	/** 当前 MoveTo 节点还没走完的 NPC 数量（多 NPC 时全部到达才推进） */
+	int32 PendingMoveCount = 0;
+
+	/** 本节点里已经派发 MoveTo 的 AI 控制器（用于解绑，弱引用防悬空） */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AAIController>> PendingMoveControllers;
+
+	/** 当前节点用到的音频组件（EndTask 时解绑） */
+	UPROPERTY()
+	TObjectPtr<UAudioComponent> CurrentAudioComponent;
+
+	/** 节点等待/延时定时器（成员持有，EndTask 时清理） */
+	FTimerHandle NodeTimerHandle;
+
 	void ExecuteNextNode();
 
 	UFUNCTION()
@@ -154,4 +170,10 @@ private:
 	void OnAnimPlayed();
 
 	void AdvanceToNextNode();
+
+	/** 解绑所有移动完成委托 */
+	void UnbindMoveCompleted();
+
+	/** 清理定时器与音频委托 */
+	void CleanupNodeState();
 };

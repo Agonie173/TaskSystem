@@ -7,12 +7,10 @@
 #include "MultipleTask/Data/PrimaryTaskDataAsset.h"
 #include "MultipleTask_EquipmentInteract.generated.h"
 
-class AActor;
-
 /**
- * 装备交互任务：
- * 处理装备柜交互 → 自由领取 → 确认后记录并自动调整为标准装备
- * 也用于执法记录仪的开关交互
+ * 装备检查任务：
+ * 轮询参训玩家 Pawn 上的装备 Tag，所有身份的要求都满足后结束。
+ * 领取装备（06 步）与装备清点（22 步）共用此任务，只改配表。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_EquipmentInteract : public UMultipleTaskBase
@@ -21,56 +19,28 @@ class POLICEPLATFORM_API UMultipleTask_EquipmentInteract : public UMultipleTaskB
 
 public:
 	virtual void StartTask_Implementation() override;
+	virtual void EndTask_Implementation() override;
 
-	// ==================== 装备柜配置 ====================
+	// 每个身份需要的装备 Tag
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
+	TArray<FRoleEquipmentTags> Requirements;
 
-	// 装备柜 Actor 的 Tag
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "EquipmentRack")
-	FName EquipmentRackTag = FName(TEXT("EquipmentRack_Main"));
+	// 轮询间隔（秒），Tag 变化没有事件通知，用低频轮询即可
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment", meta = (ClampMin = "0.1"))
+	float CheckInterval = 0.5f;
 
-	// 装备柜里有哪些装备可选
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "EquipmentRack")
-	TArray<FEquipmentInfo> AvailableEquipments;
+	/** 所有身份当前是否都满足了装备要求 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
+	bool AreAllRequirementsMet() const;
 
-	// ==================== 标准装备映射 ====================
-
-	// 确认后自动调整的标准装备（key=身份Tag，如 "Role_1"）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "StandardEquipment")
-	TMap<FName, FEquipmentInfo> StandardEquipmentByRoleTag;
-
-	// 是否在确认后自动替换为标准装备
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "StandardEquipment")
-	bool bAutoAdjustAfterConfirm = true;
-
-	// 是否记录玩家原始选择（用于评分）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "StandardEquipment")
-	bool bRecordOriginalChoice = true;
-
-	// ==================== 确认按钮 ====================
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Confirm")
-	FText ConfirmButtonText = FText::FromString(TEXT("确认装备"));
-
-	// 确认所需身份Tag（空=所有人都可以点）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Confirm")
-	FName ConfirmRoleTag = NAME_None;
-
-	// ==================== 对外接口 ====================
-
-	// 玩家选择了某装备（蓝图/UI 回调）
-	UFUNCTION(BlueprintCallable, Category = "Equipment")
-	void ReportEquipmentSelected(FName PlayerRoleTag, const FEquipmentInfo& SelectedEquipment);
-
-	// 玩家点击确认（蓝图/UI 回调）
-	UFUNCTION(BlueprintCallable, Category = "Equipment")
-	void ReportConfirmClicked(FName PlayerRoleTag);
+	/** 某身份当前缺少的装备 Tag（调试/提示用） */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
+	TArray<FName> GetMissingTags(FName RoleTag) const;
 
 private:
-	// 记录每个玩家的原始选择（用于评分）
-	TMap<FName, FEquipmentInfo> OriginalChoices;
+	FTimerHandle CheckTimerHandle;
 
-	bool bConfirmReceived = false;
+	bool IsRoleSatisfied(const FRoleEquipmentTags& Requirement) const;
 
-	void DoAutoAdjust();
-	void CheckCompletion();
+	void CheckRequirements();
 };

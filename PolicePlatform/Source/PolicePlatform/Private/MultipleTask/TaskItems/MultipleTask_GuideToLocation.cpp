@@ -3,6 +3,7 @@
 #include "MultipleTask/TaskItems/MultipleTask_GuideToLocation.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
 #include "Components/BoxComponent.h"
 
 void UMultipleTask_GuideToLocation::StartTask_Implementation()
@@ -49,6 +50,33 @@ void UMultipleTask_GuideToLocation::StartTask_Implementation()
 
 	UE_LOG(LogTemp, Log, TEXT("[GuideToLocation] Waiting for %s to enter station %s"),
 		*RequiredRoleTag.ToString(), *StationTag.ToString());
+
+	// 任务开始时玩家可能已经站在站位里（重入/延迟启动），按当前重叠补一次判定
+	TArray<AActor*> OverlappingActors;
+	CachedStationActor->GetOverlappingActors(OverlappingActors, APawn::StaticClass());
+	for (AActor* Actor : OverlappingActors)
+	{
+		if (Actor && Actor->ActorHasTag(RequiredRoleTag))
+		{
+			bRoleInStation = true;
+			UE_LOG(LogTemp, Log, TEXT("[GuideToLocation] %s already in station %s at task start"),
+				*Actor->GetName(), *StationTag.ToString());
+			CheckAndComplete();
+			break;
+		}
+	}
+}
+
+void UMultipleTask_GuideToLocation::EndTask_Implementation()
+{
+	// Skipped/中断结束也要清掉引导标志，避免残留在关卡里
+	if (SpawnedMarker)
+	{
+		SpawnedMarker->Destroy();
+		SpawnedMarker = nullptr;
+	}
+
+	Super::EndTask_Implementation();
 }
 
 void UMultipleTask_GuideToLocation::OnActorOverlapBegin(AActor* OverlappedActor, AActor* OtherActor)

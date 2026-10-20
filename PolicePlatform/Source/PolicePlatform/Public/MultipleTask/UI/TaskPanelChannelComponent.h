@@ -1,0 +1,110 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Components/ActorComponent.h"
+#include "MultipleTask/UI/TaskPanelTypes.h"
+#include "TaskPanelChannelComponent.generated.h"
+
+class APlayerController;
+class APlayerState;
+
+/** 面板状态变化（显示 / 内容更新 / 隐藏），客户端 UI 绑定此事件渲染 */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTaskPanelStateChanged, const FTaskPanelData&, Panel, bool, bVisible);
+
+/** 玩家点了面板上的按钮（仅服务器收到） */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTaskPanelActionSubmitted,
+	APlayerController*, PC, FName, PanelId, FName, ButtonId, int32, RowIndex);
+
+/**
+ * 玩家面板通道：挂在 PlayerState 上（由外层框架添加，缺少时服务器会自动创建）。
+ *
+ * 职责只有两件事：
+ *   1. 服务器把面板数据写到复制属性 → 客户端 OnRep 通知外层 UI；
+ *   2. 客户端把按钮 Id 通过 Server RPC 回传服务器 → 服务器广播给任务。
+ *
+ * 不包含任何平台判断，也不创建 Widget。PC 端加视口、VR 端用 WidgetComponent
+ * 之类的显示决策全部由外层框架的 UI 蓝图完成（读 GetPanel() + 绑 OnPanelStateChanged）。
+ *
+ * 注意：面板数据是“每个玩家一份”，监看端可遍历各玩家 PlayerState 上的本组件读取。
+ */
+UCLASS(ClassGroup = (PolicePlatform), meta = (BlueprintSpawnableComponent))
+class POLICEPLATFORM_API UTaskPanelChannelComponent : public UActorComponent
+{
+	GENERATED_BODY()
+
+public:
+	UTaskPanelChannelComponent();
+
+	// ==================== 静态获取 ====================
+
+	/** 查找玩家身上的通道组件（不创建，客户端/服务器都可用） */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	static UTaskPanelChannelComponent* FindChannel(APlayerController* PC);
+
+	/**
+	 * 查找玩家身上的通道组件；服务器上找不到时自动在 PlayerState 上创建。
+	 * 任务系统内部使用，外层框架无需手动挂组件也能工作。
+	 */
+	static UTaskPanelChannelComponent* FindOrCreateChannel(APlayerController* PC);
+
+	// ==================== 服务器接口 ====================
+
+	/** 显示或更新面板（仅服务器） */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	void ShowPanel(const FTaskPanelData& InPanel);
+
+	/**
+	 * 关闭面板（仅服务器）。
+	 * PanelId 非空时，只有当前显示的就是该面板才关闭，避免并行任务互相关掉对方的面板。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	void HidePanel(FName PanelId = NAME_None);
+
+	// ==================== 客户端接口 ====================
+
+	/** 当前面板数据（客户端 UI 渲染用） */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
+	const FTaskPanelData& GetPanel() const { return CurrentPanel; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
+	bool IsPanelVisible() const { return bPanelVisible; }
+
+	/** 客户端 UI 点击按钮时调用；服务器上调用会直接本地处理 */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	void SubmitPanelButton(FName ButtonId, int32 RowIndex = -1);
+
+	/** 该通道所属的 PlayerController（服务器与本地客户端可用） */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
+	APlayerController* GetOwningController() const;
+
+	// ==================== 事件 ====================
+
+	/** 面板显示 / 更新 / 隐藏（客户端 UI 绑定） */
+	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
+	FOnTaskPanelStateChanged OnPanelStateChanged;
+
+	/** 玩家点了按钮（仅服务器会广播，任务绑定） */
+	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
+	FOnTaskPanelActionSubmitted OnPanelActionSubmitted;
+
+protected:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	UFUNCTION(Server, Reliable)
+	void Server_SubmitPanelButton(FName PanelId, FName ButtonId, int32 RowIndex);
+
+	UFUNCTION()
+	void OnRep_PanelState();
+
+	// 服务器写入的权威面板状态（每个玩家一份）
+	UPROPERTY(ReplicatedUsing = OnRep_PanelState)
+	FTaskPanelData CurrentPanel;
+
+	UPROPERTY(ReplicatedUsing = OnRep_PanelState)
+	bool bPanelVisible = false;
+
+private:
+	void SubmitPanelButtonInternal(FName ButtonId, int32 RowIndex);
+};

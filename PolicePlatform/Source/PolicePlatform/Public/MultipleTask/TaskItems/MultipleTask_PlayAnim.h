@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "MultipleTask_PlayAnim.generated.h"
 
 class APawn;
+class UAnimSequenceBase;
 
 // 单个动画播放配置
 USTRUCT(Blueprintable, BlueprintType)
@@ -29,6 +30,7 @@ class POLICEPLATFORM_API UMultipleTask_PlayAnim : public UMultipleTaskBase
 
 public:
 	virtual void StartTask_Implementation() override;
+	virtual void EndTask_Implementation() override;
 
 	// 是否需要多动画序列
 	UPROPERTY(EditDefaultsOnly)
@@ -68,7 +70,13 @@ private:
 	int32 CurrentAnimIndex = 0;
 	int32 CurrentLoopCount = 0;
 
+	/** 动画播放时长定时器（成员持有，EndTask 时清理） */
+	FTimerHandle AnimTimerHandle;
+
 	void PlayNextAnim();
+
+	/** 在目标 Pawn 上播放一段动画，返回是否成功播放 */
+	bool PlayAnimOnTarget(UAnimSequenceBase* AnimToPlay);
 
 	UFUNCTION()
 	void OnSingleAnimEnd();
