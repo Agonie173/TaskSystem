@@ -9,6 +9,8 @@
 
 void UMultipleTask_SearchInspection::StartTask_Implementation()
 {
+	Super::StartTask_Implementation();
+
 	// 查找目标 Actor
 	CachedTargetActor = FindActorByTag(TargetActorTag);
 	if (!CachedTargetActor)
@@ -50,6 +52,12 @@ void UMultipleTask_SearchInspection::EndTask_Implementation()
 void UMultipleTask_SearchInspection::OnActorOverlapBegin(AActor* OverlappedActor, AActor* OtherActor)
 {
 	if (!OtherActor || !CachedTargetActor)
+	{
+		return;
+	}
+
+	// 只有玩家 Pawn 能触发搜身；没有 CollisionBoxTag 时避免被其他 Actor 误触发
+	if (!Cast<APawn>(OtherActor))
 	{
 		return;
 	}

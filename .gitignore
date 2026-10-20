@@ -30,3 +30,13 @@
 *.exe
 *.out
 *.app
+
+PolicePlatform/.idea
+PolicePlatform/.trae
+PolicePlatform/.vs
+PolicePlatform/Binaries
+PolicePlatform/DerivedDataCache
+PolicePlatform/Intermediate
+PolicePlatform/Saved
+PolicePlatform/.vsconfig
+PolicePlatform/PolicePlatform.sln

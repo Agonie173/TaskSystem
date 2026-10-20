@@ -9,19 +9,21 @@
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "TimerManager.h"
 #include "MultipleTask/TaskSequencerComponent.h"
 
 void UMultipleTask_NPCBehavior::StartTask_Implementation()
 {
+	Super::StartTask_Implementation();
+
+	// 同一个任务实例可能被重复启动，先复位自身状态
+	CleanupNodeState();
+	ControlledNPCs.Reset();
+	CurrentBehaviorIndex = -1;
+
 	if (bUseExistingNPC)
 	{
-		// 接管模式：按 Tag 查找已有 NPC
-		for (APawn* Pawn : OwnerSequencer->GetAllPlayerPawns())
-		{
-			// 跳过玩家自己
-		}
-
 		// 遍历 World 查找带 Tag 的 Pawn
 		UWorld* World = GetWorld();
 		if (World)
@@ -106,6 +108,8 @@ void UMultipleTask_NPCBehavior::StartTask_Implementation()
 
 void UMultipleTask_NPCBehavior::EndTask_Implementation()
 {
+	CleanupNodeState();
+
 	if (bAutoDestroyOnEnd)
 	{
 		for (APawn* NPC : ControlledNPCs)
@@ -149,20 +153,35 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 			}
 		}
 
+		UnbindMoveCompleted();
+		PendingMoveCount = 0;
+
 		for (APawn* NPC : ControlledNPCs)
 		{
 			if (!NPC) continue;
-			AController* Ctrl = NPC->GetController();
-			if (AAIController* AICtrl = Cast<AAIController>(Ctrl))
-			{
+			AAIController* AICtrl = Cast<AAIController>(NPC->GetController());
+			if (!AICtrl) continue;
+
+			// 先移除再添加，避免同一节点被重复执行时委托叠加
+			AICtrl->ReceiveMoveCompleted.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+			AICtrl->ReceiveMoveCompleted.AddDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+
+			const EPathFollowingRequestResult::Type MoveResult =
 				AICtrl->MoveToLocation(MoveTarget, Node.AcceptanceRadius);
-				// 绑定完成委托
-				AICtrl->ReceiveMoveCompleted.AddDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+
+			// 失败或本来就在目标点：不会再有完成回调，不计入等待数
+			if (MoveResult != EPathFollowingRequestResult::RequestSuccessful)
+			{
+				AICtrl->ReceiveMoveCompleted.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+				continue;
 			}
+
+			PendingMoveCount++;
+			PendingMoveControllers.Add(AICtrl);
 		}
 
-		// 如果没有 AIController 或没有 NPC，直接跳过
-		if (ControlledNPCs.IsEmpty())
+		// 没有任何 NPC 真正在移动（没 AIController / 已到位），直接推进
+		if (PendingMoveCount <= 0)
 		{
 			AdvanceToNextNode();
 		}
@@ -173,9 +192,8 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 		UWorld* World = GetWorld();
 		if (World)
 		{
-			FTimerHandle Dummy;
-			World->GetTimerManager().SetTimer(Dummy, this, &UMultipleTask_NPCBehavior::AdvanceToNextNode,
-				Node.WaitDuration, false);
+			World->GetTimerManager().SetTimer(NodeTimerHandle, this,
+				&UMultipleTask_NPCBehavior::AdvanceToNextNode, Node.WaitDuration, false);
 		}
 		else
 		{
@@ -219,9 +237,12 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 
 			if (AudioComp && Node.AudioToPlay)
 			{
-				AudioComp->SetSound(Node.AudioToPlay);
+				// 先去重再绑定，避免多次播放时同一实例被绑定多次
+				AudioComp->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnPlayAudioFinished);
 				AudioComp->OnAudioFinished.AddDynamic(this, &UMultipleTask_NPCBehavior::OnPlayAudioFinished);
+				AudioComp->SetSound(Node.AudioToPlay);
 				AudioComp->Play();
+				CurrentAudioComponent = AudioComp;
 				bStarted = true;
 				break; // 只等第一个 NPC 的音频播完
 			}
@@ -287,30 +308,69 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 
 void UMultipleTask_NPCBehavior::OnMoveCompleted(FAIRequestID RequestID, EPathFollowingResult::Type Result)
 {
-	// 所有 AIController 都解绑 MoveCompleted 委托
-	for (APawn* NPC : ControlledNPCs)
+	if (Result != EPathFollowingResult::Success)
 	{
-		if (!NPC) continue;
-		if (AController* Ctrl = NPC->GetController())
-		{
-			if (AAIController* AICtrl = Cast<AAIController>(Ctrl))
-			{
-				AICtrl->ReceiveMoveCompleted.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
-			}
-		}
+		UE_LOG(LogTemp, Warning, TEXT("[NPCBehavior] MoveTo finished with result %d, continue anyway"), (int32)Result);
 	}
 
+	if (PendingMoveCount > 0)
+	{
+		--PendingMoveCount;
+	}
+
+	// 还有人没走到：等最后一个到达再推进（避免第一个到达就跳过整段移动）
+	if (PendingMoveCount > 0)
+	{
+		return;
+	}
+
+	UnbindMoveCompleted();
 	AdvanceToNextNode();
+}
+
+void UMultipleTask_NPCBehavior::UnbindMoveCompleted()
+{
+	for (const TWeakObjectPtr<AAIController>& WeakCtrl : PendingMoveControllers)
+	{
+		if (AAIController* AICtrl = WeakCtrl.Get())
+		{
+			AICtrl->ReceiveMoveCompleted.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+		}
+	}
+	PendingMoveControllers.Reset();
+	PendingMoveCount = 0;
 }
 
 void UMultipleTask_NPCBehavior::OnPlayAudioFinished()
 {
+	if (CurrentAudioComponent)
+	{
+		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnPlayAudioFinished);
+		CurrentAudioComponent = nullptr;
+	}
 	AdvanceToNextNode();
 }
 
 void UMultipleTask_NPCBehavior::OnAnimPlayed()
 {
 	AdvanceToNextNode();
+}
+
+void UMultipleTask_NPCBehavior::CleanupNodeState()
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		World->GetTimerManager().ClearTimer(NodeTimerHandle);
+	}
+
+	UnbindMoveCompleted();
+
+	if (CurrentAudioComponent)
+	{
+		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnPlayAudioFinished);
+		CurrentAudioComponent = nullptr;
+	}
 }
 
 void UMultipleTask_NPCBehavior::AdvanceToNextNode()
@@ -325,9 +385,8 @@ void UMultipleTask_NPCBehavior::AdvanceToNextNode()
 
 	if (CurrentNode.DelayBeforeNext > 0.f && World)
 	{
-		FTimerHandle Dummy;
-		World->GetTimerManager().SetTimer(Dummy, this, &UMultipleTask_NPCBehavior::ExecuteNextNode,
-			CurrentNode.DelayBeforeNext, false);
+		World->GetTimerManager().SetTimer(NodeTimerHandle, this,
+			&UMultipleTask_NPCBehavior::ExecuteNextNode, CurrentNode.DelayBeforeNext, false);
 	}
 	else
 	{

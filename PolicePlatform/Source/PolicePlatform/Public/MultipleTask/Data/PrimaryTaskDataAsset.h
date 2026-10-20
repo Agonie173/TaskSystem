@@ -30,6 +30,62 @@ struct FEquipmentInfo
 };
 
 /**
+ * 一个身份 + 该身份要站的碰撞盒（多人到位 / 就位确认共用）
+ */
+USTRUCT(BlueprintType)
+struct FRoleStationPair
+{
+	GENERATED_BODY()
+
+	// 要求到位的身份 Tag（如 "Role_1"）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Stations")
+	FName RoleTag;
+
+	// 关卡中站位碰撞盒 Actor 的 Tag
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Stations")
+	FName StationTag;
+};
+
+/**
+ * 某个身份需要携带的装备 Tag 列表（领装 / 装备清点共用）。
+ * 物品被拿取时由物品类给拾取者 Pawn 贴 Tag，丢弃时移除；
+ * 任务只读 Pawn 上的 Tag，不关心装备 Actor 类。
+ */
+USTRUCT(BlueprintType)
+struct FRoleEquipmentTags
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
+	FName RoleTag;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
+	TArray<FName> RequiredTags;
+};
+
+/**
+ * 评分规则：错误码 → 扣分值
+ * 任务只上报错误码，由评分组件按当前步骤的规则扣分，任务本身不关心分值
+ */
+USTRUCT(BlueprintType)
+struct FScoreRule
+{
+	GENERATED_BODY()
+
+	// 错误码（任务里配置的 ViolationErrorCode 就是它）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	FName ErrorCode;
+
+	// 描述（评分报表/调试用）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	FText Description;
+
+	// 扣分值（正数）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (ClampMin = "0"))
+	int32 Penalty = 0;
+};
+
+/**
  * 单个任务步骤：
  * Step 内的所有 ParallelTasks 并行执行，全部完成后进入下一个 Step
  */
@@ -50,6 +106,10 @@ struct FTaskStep
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Instanced,
 		meta = (ShowOnlyInnerProperties))
 	TArray<TObjectPtr<UMultipleTaskBase>> ParallelTasks;
+
+	// 本步骤涉及的评分规则（错误码 → 扣分值）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (ShowOnlyInnerProperties))
+	TArray<FScoreRule> ScoreRules;
 };
 
 /**

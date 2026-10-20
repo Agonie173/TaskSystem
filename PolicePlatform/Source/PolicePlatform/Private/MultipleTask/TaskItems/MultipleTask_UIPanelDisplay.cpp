@@ -6,8 +6,10 @@
 
 void UMultipleTask_UIPanelDisplay::StartTask_Implementation()
 {
+	Super::StartTask_Implementation();
+
 	UE_LOG(LogTemp, Log, TEXT("[UIPanelDisplay] Showing panel: Type=%d, Title=%s, AutoCloseDelay=%.1f"),
-		(int32)PanelType, *Title.ToString(), AutoCloseDelay);
+		(int32)PanelType, *PanelTitle.ToString(), AutoCloseDelay);
 
 	// 启动自动关闭计时
 	if (AutoCloseDelay > 0.f)

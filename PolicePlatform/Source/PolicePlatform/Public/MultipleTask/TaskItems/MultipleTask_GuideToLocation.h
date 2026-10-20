@@ -20,6 +20,7 @@ class POLICEPLATFORM_API UMultipleTask_GuideToLocation : public UMultipleTaskBas
 
 public:
 	virtual void StartTask_Implementation() override;
+	virtual void EndTask_Implementation() override;
 	virtual void OnActorOverlapBegin(AActor* OverlappedActor, AActor* OtherActor) override;
 	virtual void OnActorOverlapEnd(AActor* OverlappedActor, AActor* OtherActor) override;
 
