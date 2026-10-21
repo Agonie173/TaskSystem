@@ -15,6 +15,15 @@
  * 每名玩家各记一次，不回退、不要求重选。
  *
  * 装备统一调整为标准装备由外层框架在步骤结束后完成，本任务不操作物品。
+ *
+ * 职责：展示各身份当前已领取的装备（按 EquipmentTagPool 过滤 Pawn Tag），
+ *       收齐在座身份的确认回执后按 StandardEquipment 核对并上报评分事件。
+ * 设计原因：领取动作由装备柜交互完成，本任务只读 Pawn Tag 做事后核对，不
+ *       操作物品；确认制可避免玩家还没选完就被流程推进。
+ * 用法：StandardEquipment 既是核对基准，也决定需要等哪些身份确认；缺席身份
+ *       自动跳过（不参与确认也不评分），防止流程卡死。
+ * 坑：仅服务器执行；EquipmentTagPool 为空时任何装备都识别不到，全员都会被判
+ *       "少拿"；少拿/多拿各记一次分，记完不回退、不要求重选。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_EquipmentConfirm : public UMultipleTask_PanelBase
@@ -24,8 +33,11 @@ class POLICEPLATFORM_API UMultipleTask_EquipmentConfirm : public UMultipleTask_P
 public:
 	UMultipleTask_EquipmentConfirm();
 
+	/** 任务开始：清空回执并下发面板；StandardEquipment 未配置时直接结束（仅服务器执行） */
 	virtual void StartTask_Implementation() override;
+	/** 组装面板数据：每个身份一行（当前装备 + 确认状态），并追加确认按钮 */
 	virtual FTaskPanelData BuildPanelData() const override;
+	/** 处理确认按钮回执：按 PlayerController 反查身份，去重记录并刷新面板，全员确认则核对结束 */
 	virtual void HandlePanelAction_Implementation(APlayerController* PC, FName ButtonId, int32 RowIndex) override;
 
 	// ==================== 配表 ====================
@@ -83,6 +95,7 @@ private:
 	/** 该身份是否有玩家在场（缺席身份不参与确认与评分） */
 	bool IsRolePresent(FName RoleTag) const;
 
+	// 在座身份是否全部已确认（缺席身份自动豁免）
 	bool AreAllRolesConfirmed() const;
 
 	/** 核对并上报错误，然后结束 */

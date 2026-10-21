@@ -12,7 +12,13 @@ void UMultipleTask_VoiceRecognitionWait::StartTask_Implementation()
 	// 显示字幕
 	ShowSubtitle();
 
-	// 启动超时计时器
+	// 配置告警：关键词列表为空时任意回执都会被判为匹配成功
+	if (RequiredKeyWords.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] RequiredKeyWords is empty, any recognition result will pass"));
+	}
+
+	// 启动超时计时器（RecognitionTimeout <= 0 时不设超时，可能一直等待回执）
 	if (RecognitionTimeout > 0.f)
 	{
 		UWorld* World = GetWorld();
@@ -35,6 +41,7 @@ void UMultipleTask_VoiceRecognitionWait::EndTask_Implementation()
 		World->GetTimerManager().ClearTimer(TimeoutTimerHandle);
 	}
 	HideSubtitle();
+	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Task ended after %d retry(ies)"), RetryCount);
 	Super::EndTask_Implementation();
 }
 
@@ -87,6 +94,8 @@ void UMultipleTask_VoiceRecognitionWait::OnTimeout()
 
 	if (RetryCount >= MaxRetryCount)
 	{
+		// 超时路径的重试耗尽：无错误码字段，仅放行流程结束任务（不扣分）
+		UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Retry limit reached after timeout, task ending"));
 		EndTask();
 	}
 	else
@@ -151,6 +160,11 @@ bool UMultipleTask_VoiceRecognitionWait::CheckKeywordMatch(const FString& Text)
 		}
 	}
 
+	// 调试日志：匹配统计，便于排查识别质量问题（每次回执只打一条）
+	UE_LOG(LogTemp, Verbose, TEXT("[VoiceRecognition] Match stats: matched %d/%d, required matched %d/%d, policy %d, ratio %.2f"),
+		MatchedCount, RequiredKeyWords.Num(), RequiredMatchedCount, RequiredCount,
+		static_cast<int32>(KeywordMatchPolicy), RequiredRatio);
+
 	switch (KeywordMatchPolicy)
 	{
 	case EKeywordMatchPolicy::All:
@@ -179,5 +193,6 @@ void UMultipleTask_VoiceRecognitionWait::ShowSubtitle()
 
 void UMultipleTask_VoiceRecognitionWait::HideSubtitle()
 {
-	// 隐藏字幕
+	// 隐藏字幕（实际 UI 呈现由外层框架/蓝图处理）
+	UE_LOG(LogTemp, Verbose, TEXT("[VoiceRecognition] Subtitle hidden"));
 }

@@ -9,9 +9,7 @@
 UMultipleTask_StationConfirm::UMultipleTask_StationConfirm()
 {
 	PanelType = EUIPanelType::ScenePrompt;
-	PanelTitle = FText::FromString(TEXT("就位确认"));
-	PanelContent = FText::FromString(TEXT("三名玩家全部回到警戒位置后，由任意一名玩家确认。"));
-	ConfirmButtonText = FText::FromString(TEXT("确认警戒"));
+		ConfirmButtonText = FText::FromString(TEXT("确认警戒"));
 	NotReadyReason = FText::FromString(TEXT("三名玩家未全部到位"));
 }
 
@@ -84,6 +82,9 @@ void UMultipleTask_StationConfirm::OnActorOverlapBegin(AActor* OverlappedActor, 
 		return;
 	}
 
+	UE_LOG(LogTemp, Verbose, TEXT("[StationConfirm] Overlap begin on %s by %s"),
+		*OverlappedActor->GetName(), *OtherActor->GetName());
+
 	bool bChanged = false;
 
 	for (int32 Index = 0; Index < Requirements.Num(); ++Index)
@@ -93,6 +94,7 @@ void UMultipleTask_StationConfirm::OnActorOverlapBegin(AActor* OverlappedActor, 
 			continue;
 		}
 
+		// 判定口径：按 RoleTag 解析出的"应到 Pawn"必须正是本次进站的 OtherActor
 		APawn* RequiredPawn = FindPawnByRoleTag(Requirements[Index].RoleTag);
 		if (RequiredPawn && RequiredPawn == OtherActor && !ArrivedFlags[Index])
 		{
@@ -103,8 +105,20 @@ void UMultipleTask_StationConfirm::OnActorOverlapBegin(AActor* OverlappedActor, 
 		}
 	}
 
+	// 到位状态变化要即时同步面板（确认按钮的可用性随之变化）
 	if (bChanged)
 	{
+		int32 ArrivedCount = 0;
+		for (const bool bArrived : ArrivedFlags)
+		{
+			if (bArrived)
+			{
+				++ArrivedCount;
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("[StationConfirm] Progress %d/%d arrived"),
+			ArrivedCount, Requirements.Num());
+
 		PushPanelToAudience();
 	}
 }
@@ -115,6 +129,9 @@ void UMultipleTask_StationConfirm::OnActorOverlapEnd(AActor* OverlappedActor, AA
 	{
 		return;
 	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("[StationConfirm] Overlap end on %s by %s"),
+		*OverlappedActor->GetName(), *OtherActor->GetName());
 
 	bool bChanged = false;
 
@@ -142,8 +159,20 @@ void UMultipleTask_StationConfirm::OnActorOverlapEnd(AActor* OverlappedActor, AA
 		}
 	}
 
+	// 状态回退同样要即时同步面板，否则确认按钮可能停留在可点状态
 	if (bChanged)
 	{
+		int32 ArrivedCount = 0;
+		for (const bool bArrived : ArrivedFlags)
+		{
+			if (bArrived)
+			{
+				++ArrivedCount;
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("[StationConfirm] Progress %d/%d arrived"),
+			ArrivedCount, Requirements.Num());
+
 		PushPanelToAudience();
 	}
 }
@@ -152,6 +181,7 @@ void UMultipleTask_StationConfirm::OnActorOverlapEnd(AActor* OverlappedActor, AA
 
 bool UMultipleTask_StationConfirm::AreAllArrived() const
 {
+	// 初始化未完成或无配置时一律视为未就绪，宁可多等也不能提前放行确认
 	if (ArrivedFlags.Num() != Requirements.Num() || Requirements.Num() == 0)
 	{
 		return false;
@@ -169,11 +199,13 @@ bool UMultipleTask_StationConfirm::AreAllArrived() const
 
 void UMultipleTask_StationConfirm::HandlePanelAction_Implementation(APlayerController* PC, FName ButtonId, int32 RowIndex)
 {
+	// 本任务只关心确认按钮，其他回传直接忽略
 	if (ButtonId != ConfirmButtonId)
 	{
 		return;
 	}
 
+	// 二次校验到位状态：面板数据可能已过期（如玩家刚离开还没刷新），防止越权确认
 	if (!AreAllArrived())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[StationConfirm] %s confirmed before all roles arrived"), PC ? *PC->GetName() : TEXT("Unknown"));
@@ -192,6 +224,7 @@ FTaskPanelData UMultipleTask_StationConfirm::BuildPanelData() const
 
 	const bool bAllArrived = AreAllArrived();
 
+	// 每个身份一行实时到位状态（绿=已到位，红=未到位）
 	for (int32 Index = 0; Index < Requirements.Num(); ++Index)
 	{
 		const bool bArrived = ArrivedFlags.IsValidIndex(Index) && ArrivedFlags[Index];
@@ -203,6 +236,7 @@ FTaskPanelData UMultipleTask_StationConfirm::BuildPanelData() const
 		Data.Rows.Add(Row);
 	}
 
+	// 确认按钮：未全部到位时禁用并显示 NotReadyReason
 	FTaskPanelButton Button;
 	Button.ButtonId = ConfirmButtonId;
 	Button.Label = ConfirmButtonText;

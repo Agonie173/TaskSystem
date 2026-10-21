@@ -10,14 +10,6 @@
 class APlayerController;
 class UTaskPanelChannelComponent;
 
-/** 面板下发给谁 */
-UENUM(BlueprintType)
-enum class EPanelAudience : uint8
-{
-	AllParticipants,  // 所有已注册参训玩家
-	SpecificRoles,    // 指定身份的玩家
-};
-
 /**
  * 面板类任务基类：
  * 负责把 FTaskPanelData 下发到每个玩家 PlayerState 上的通道组件，
@@ -25,6 +17,15 @@ enum class EPanelAudience : uint8
  * BuildPanelData 和 HandlePanelAction。
  *
  * 本类不包含任何平台判断，也不创建 Widget：显示方式由外层框架 UI 决定。
+ *
+ * 职责：把 FTaskPanelData 组包并经每个玩家 PlayerState 上的通道组件（UTaskPanelChannelComponent）
+ *      下发到目标玩家，同时接收面板按钮回传。
+ * 设计原因：显示方式完全交给外层框架 UI，本类只负责数据组包、受众解析与通道绑定/解绑，
+ *          从而同时兼容 PC/VR 等不同端的表现。
+ * 使用方式：子类重写 BuildPanelData 填充动态内容、HandlePanelAction 处理按钮回传；
+ *          StartTask 自动生成本实例面板 Id 并按 Audience 下发，EndTask 按需隐藏面板并解绑全部通道。
+ * 注意坑：仅服务器有效；PanelInstanceId 取对象名（实例间天然唯一），
+ *         HandleChannelAction 会丢弃过期面板的点击与非受众玩家的回传。
  */
 UCLASS(Abstract, CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_PanelBase : public UMultipleTaskBase
@@ -32,31 +33,28 @@ class POLICEPLATFORM_API UMultipleTask_PanelBase : public UMultipleTaskBase
 	GENERATED_BODY()
 
 public:
+	// 启动任务：生成本实例的面板 Id 并按受众下发面板（仅服务器）
 	virtual void StartTask_Implementation() override;
+
+	// 结束任务：按 bHidePanelOnEnd 隐藏面板、解绑全部通道后交由基类幂等广播（仅服务器）
 	virtual void EndTask_Implementation() override;
 
 	// ==================== 面板配置 ====================
-
+	//UI面板类型（决定外层 UI 用哪套皮肤/布局，不影响任务数据）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	EUIPanelType PanelType = EUIPanelType::Custom;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
-	FText PanelTitle;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
-	FText PanelContent;
-
-	// 静态数据行（动态内容可在 BuildPanelData 里追加）
+	// 静态数据行（标题/正文/列表项等均由 UI 按 PanelType 自行解读 Label/Value；动态内容可在 BuildPanelData 里追加）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	TArray<FPanelRowData> PanelRows;
 
 	// 静态按钮（动态按钮可在 BuildPanelData 里追加）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	TArray<FTaskPanelButton> PanelButtons;
-
+	// 哪些玩家可以看到这个 UI
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	EPanelAudience Audience = EPanelAudience::AllParticipants;
-
+	//目标角色标签
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel",
 		meta = (EditCondition = "Audience == EPanelAudience::SpecificRoles", EditConditionHides))
 	TArray<FName> TargetRoleTags;
@@ -100,7 +98,10 @@ protected:
 	UFUNCTION()
 	void HandleChannelAction(APlayerController* PC, FName PanelId, FName ButtonId, int32 RowIndex);
 
+	// 绑定通道的按钮回传委托（去重；弱引用持有，玩家离开时不会阻止通道回收）
 	void BindChannel(UTaskPanelChannelComponent* Channel);
+
+	// 解绑全部已绑定通道并清空记录（EndTask 时调用）
 	void UnbindAllChannels();
 
 	// 本次任务实例的面板 Id（用对象名，实例间天然唯一）

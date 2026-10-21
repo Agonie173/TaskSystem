@@ -48,10 +48,12 @@ UScoreComponent* UScoreComponent::FindOrCreateScoreComponent(UWorld* World)
 	UScoreComponent* NewComponent = NewObject<UScoreComponent>(GameState, TEXT("ScoreComponent"));
 	if (!NewComponent)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[Score] Failed to auto-create ScoreComponent on GameState %s"), *GetNameSafe(GameState));
 		return nullptr;
 	}
 
 	NewComponent->RegisterComponent();
+	UE_LOG(LogTemp, Log, TEXT("[Score] Auto-created ScoreComponent on GameState %s"), *GetNameSafe(GameState));
 	return NewComponent;
 }
 
@@ -102,6 +104,9 @@ void UScoreComponent::ReportScoreEvent(FName RoleTag, FName ErrorCode)
 
 	UE_LOG(LogTemp, Log, TEXT("[Score] %s reported %s (-%d), final %d"),
 		*RoleTag.ToString(), *ErrorCode.ToString(), Penalty, FinalScore);
+	// 补充累计信息，便于对账（角色/错误码/单次分值/累计扣分/违规次数）
+	UE_LOG(LogTemp, Verbose, TEXT("[Score] %s totals: deduction %d, violations %d, error codes %d"),
+		*RoleTag.ToString(), Entry->TotalDeduction, Entry->ViolationCount, Entry->ViolatedErrorCodes.Num());
 
 	NotifyScoreChanged();
 }
@@ -114,6 +119,7 @@ void UScoreComponent::ResetScores()
 	}
 
 	ReplicatedScores.Reset();
+	UE_LOG(LogTemp, Log, TEXT("[Score] All score entries reset"));
 	NotifyScoreChanged();
 }
 

@@ -43,6 +43,7 @@ void ASuspectPawn::BeginPlay()
 	{
 		TriggerBox->OnComponentBeginOverlap.AddDynamic(this, &ASuspectPawn::HandleTriggerBegin);
 		TriggerBox->OnComponentEndOverlap.AddDynamic(this, &ASuspectPawn::HandleTriggerEnd);
+		UE_LOG(LogTemp, Verbose, TEXT("[SuspectPawn] Overlap delegates bound on %s"), *GetName());
 	}
 }
 
@@ -64,7 +65,14 @@ void ASuspectPawn::HandleTriggerBegin(UPrimitiveComponent* OverlappedComp, AActo
 
 	if (UTaskSequencerComponent* Sequencer = GetSequencer())
 	{
+		UE_LOG(LogTemp, Log, TEXT("[SuspectPawn] ForwardOverlapBegin: suspect %s, entering actor %s"),
+			*GetName(), *GetNameSafe(OtherActor));
 		Sequencer->ForwardOverlapBegin(this, OtherActor);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[SuspectPawn] No sequencer on GameState, begin overlap from %s dropped"),
+			*GetNameSafe(OtherActor));
 	}
 }
 
@@ -78,6 +86,13 @@ void ASuspectPawn::HandleTriggerEnd(UPrimitiveComponent* OverlappedComp, AActor*
 
 	if (UTaskSequencerComponent* Sequencer = GetSequencer())
 	{
+		UE_LOG(LogTemp, Log, TEXT("[SuspectPawn] ForwardOverlapEnd: suspect %s, leaving actor %s"),
+			*GetName(), *GetNameSafe(OtherActor));
 		Sequencer->ForwardOverlapEnd(this, OtherActor);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[SuspectPawn] No sequencer on GameState, end overlap from %s dropped"),
+			*GetNameSafe(OtherActor));
 	}
 }

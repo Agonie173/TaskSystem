@@ -9,22 +9,28 @@
 class UMultipleTaskBase;
 
 /**
- * 装备信息（配表用）
+ * 装备信息（配表用）：某身份的初始标准装备定义。
+ * EquipmentClass 用软引用避免编辑器加载全部装备蓝图；运行时由
+ * Sequencer 初始化时按 RoleTag 查表生成/发放装备 Actor。
  */
 USTRUCT(BlueprintType)
 struct FEquipmentInfo
 {
 	GENERATED_BODY()
 
+	// 装备唯一标识（日志/存档/评分报表用）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	FName EquipmentId;
 
+	// 显示名（UI 提示/装备清点列表用）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	FText DisplayName;
 
+	// 装备 Actor 类（软引用，运行时异步加载后 Spawn）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	TSoftClassPtr<AActor> EquipmentClass;
 
+	// UI 上显示该装备时使用的颜色
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	FLinearColor Color = FLinearColor::White;
 };
@@ -115,6 +121,17 @@ struct FTaskStep
 /**
  * 主任务配表：一个任务 = 多个步骤顺序执行
  * 每个步骤 = 多个任务项并行执行
+ *
+ * 三层结构：Steps（顺序步骤）→ 每步的 ParallelTasks（Instanced 并行任务项）
+ * + ScoreRules（本步骤的错误码 → 扣分规则）。
+ *
+ * 重要——本资产是“模板对象”：
+ *   UPROPERTY 用 Instanced 修饰 ParallelTasks，编辑器里每个任务项都是
+ *   独立实例；但运行时绝对不允许直接执行模板里的任务对象，否则多个
+ *   训练会话/多次重开会共享同一份任务实例状态（进度、标记位互相污染），
+ *   且改动会写回资产。正确做法是 Sequencer 在 ExecuteStep 时用
+ *   DuplicateObject 把当前步骤的任务项实例化成运行时副本后再启动。
+ *   同理，任何运行时代码都不得修改本资产（只读使用）。
  */
 UCLASS()
 class POLICEPLATFORM_API UPrimaryTaskDataAsset : public UPrimaryDataAsset
@@ -122,12 +139,9 @@ class POLICEPLATFORM_API UPrimaryTaskDataAsset : public UPrimaryDataAsset
 	GENERATED_BODY()
 
 public:
+	// 任务名（日志/调试/任务列表显示用）
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Task")
 	FName TaskName;
-
-	// 身份Tag → 初始标准装备映射（Sequencer 初始化时用）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Setup")
-	TMap<FName, FEquipmentInfo> DefaultEquipmentByRoleTag;
 
 	// 所有步骤，顺序执行；每个 Step 内的 ParallelTasks 并行执行
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Steps",

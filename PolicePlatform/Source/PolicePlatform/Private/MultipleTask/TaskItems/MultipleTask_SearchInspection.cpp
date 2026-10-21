@@ -70,10 +70,14 @@ void UMultipleTask_SearchInspection::OnActorOverlapBegin(AActor* OverlappedActor
 	const FBodyPartConfig& CurrentPart = BodyParts[CurrentPartIndex];
 
 	// 检查触发的碰撞盒是不是当前部位的
+	// 口径：CollisionBoxTag 为空（NAME_None）时不过滤——任何触发盒都能推进当前部位；
+	// 非空时只认带该 Tag 的触发盒
 	if (!CurrentPart.CollisionBoxTag.IsNone())
 	{
 		if (!OverlappedActor->ActorHasTag(CurrentPart.CollisionBoxTag))
 		{
+			UE_LOG(LogTemp, Verbose, TEXT("[SearchInspection] Ignored overlap on %s (expecting box tag %s)"),
+				*OverlappedActor->GetName(), *CurrentPart.CollisionBoxTag.ToString());
 			return; // 不是当前部位的盒子，忽略
 		}
 	}
@@ -94,11 +98,15 @@ void UMultipleTask_SearchInspection::OnActorOverlapBegin(AActor* OverlappedActor
 
 	if (!bValidInspector)
 	{
+		UE_LOG(LogTemp, Verbose, TEXT("[SearchInspection] %s is not a valid inspector, ignored"),
+			*OtherActor->GetName());
 		return;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[SearchInspection] Part '%s' checked by %s"),
 		*CurrentPart.PartName.ToString(), *OtherActor->GetName());
+	// 部位推进进度（x/y）
+	UE_LOG(LogTemp, Log, TEXT("[SearchInspection] Progress %d/%d"), CurrentPartIndex + 1, BodyParts.Num());
 
 	// 播放单部位完成音效
 	if (PartCompleteSound)
@@ -125,11 +133,13 @@ void UMultipleTask_SearchInspection::HighlightCurrentPart()
 	// 1. 给 Target 的 Mesh 对应 Socket 位置上 Spawn 一个高亮 Actor
 	// 2. 或者动态材质参数 bHighlight=true
 	// 这里留接口给蓝图/Sequencer 层实现
+	// 注意：当前函数到此为止，没有任何实际表现逻辑（空桩），HighlightColor 未被消费
 }
 
 void UMultipleTask_SearchInspection::ClearHighlightCurrentPart()
 {
 	// 清除上一个部位的高亮
+	// 注意：空桩，无实际逻辑；EndTask 与每次部位推进都会调用，接入表现时再补
 }
 
 void UMultipleTask_SearchInspection::AdvanceToNextPart()

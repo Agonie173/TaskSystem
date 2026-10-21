@@ -9,6 +9,8 @@
 void UMultipleTaskBase::StartTask_Implementation()
 {
 	bTaskEnded = false;
+
+	UE_LOG(LogTemp, Log, TEXT("[MultipleTaskBase] Task start: Name=%s"), *TaskName.ToString());
 }
 
 void UMultipleTaskBase::EndTask_Implementation()
@@ -16,9 +18,12 @@ void UMultipleTaskBase::EndTask_Implementation()
 	// 同一个任务只允许广播一次，否则 Sequencer 的完成计数会翻倍
 	if (bTaskEnded)
 	{
+		UE_LOG(LogTemp, Verbose, TEXT("[MultipleTaskBase] EndTask ignored: task already ended, Name=%s"), *TaskName.ToString());
 		return;
 	}
 	bTaskEnded = true;
+
+	UE_LOG(LogTemp, Log, TEXT("[MultipleTaskBase] Task end, broadcasting OnTaskEnd: Name=%s"), *TaskName.ToString());
 
 	OnTaskEnd.Broadcast(this);
 }
@@ -37,6 +42,8 @@ APawn* UMultipleTaskBase::FindPawnByRoleTag(FName RoleTag) const
 	{
 		return OwnerSequencer->GetPawnByRoleTag(RoleTag);
 	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[MultipleTaskBase] FindPawnByRoleTag failed: OwnerSequencer is null, RoleTag=%s"), *RoleTag.ToString());
 	return nullptr;
 }
 
@@ -46,6 +53,8 @@ AActor* UMultipleTaskBase::FindActorByTag(FName ActorTag) const
 	{
 		return OwnerSequencer->FindActorByTag(ActorTag);
 	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[MultipleTaskBase] FindActorByTag failed: OwnerSequencer is null, ActorTag=%s"), *ActorTag.ToString());
 	return nullptr;
 }
 
@@ -65,4 +74,6 @@ void UMultipleTaskBase::ReportScoreEvent(FName RoleTag, FName ErrorCode)
 	}
 
 	ScoreComp->ReportScoreEvent(RoleTag, ErrorCode);
+
+	UE_LOG(LogTemp, Log, TEXT("[MultipleTaskBase] Score event reported: Role=%s, ErrorCode=%s"), *RoleTag.ToString(), *ErrorCode.ToString());
 }

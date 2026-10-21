@@ -17,7 +17,7 @@ USTRUCT(BlueprintType)
 struct FPlayerScoreEntry
 {
 	GENERATED_BODY()
-
+	//玩家标签
 	UPROPERTY(BlueprintReadOnly, Category = "Score")
 	FName RoleTag;
 
@@ -41,9 +41,20 @@ struct FPlayerScoreEntry
 /**
  * 评分组件：挂在 GameState 上，服务器权威。
  *
- * 任务只上报「谁 + 错误码」，扣分值由本组件按任务配表
- * （当前步骤的 FScoreRule）解析，任务本身不关心分值。
- * 客户端通过复制的 ReplicatedScores 刷新 HUD。
+ * 设计动机：任务只上报「谁 + 错误码」，扣分值由本组件按任务配表
+ * （当前步骤的 FScoreRule，错误码 → 扣分值）解析，任务本身不关心分值。
+ * 这样策划改分值只需改配表，不需要动任务蓝图/代码；错误码也同时
+ * 用于评分报表的归因去重。
+ *
+ * 使用方式：服务器上调用 ReportScoreEvent(RoleTag, ErrorCode)；
+ * FindOrCreateScoreComponent 会在服务器自动补挂到 GameState，外层框架
+ * 不手动挂组件也能工作。客户端通过复制的 ReplicatedScores（含排序）
+ * 刷新 HUD，绑定 OnScoreBoardChanged 即可。
+ *
+ * 坑：解析规则依赖同一 GameState 上的 UTaskSequencerComponent 提供
+ * 当前步骤的规则表，Sequencer 缺失或当前步骤未配该错误码时按 0 扣分
+ * （仍会计入违规次数并打 Warning 日志）。服务器本地不会收到 OnRep，
+ * 由 NotifyScoreChanged 手动触发一次广播。
  */
 UCLASS(ClassGroup = (PolicePlatform), meta = (BlueprintSpawnableComponent))
 class POLICEPLATFORM_API UScoreComponent : public UActorComponent
@@ -91,15 +102,18 @@ protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
+	// 评分记录（服务器权威，复制到客户端；写入后按 RoleTag 排序，保证 HUD 行序稳定）
 	UPROPERTY(ReplicatedUsing = OnRep_Scores)
 	TArray<FPlayerScoreEntry> ReplicatedScores;
 
+	// 复制回调：广播 OnScoreBoardChanged 让客户端 UI 刷新
 	UFUNCTION()
 	void OnRep_Scores();
 
 	// 服务器本地不会收到 OnRep，手动通知一次
 	void NotifyScoreChanged();
 
+	// 按 RoleTag 查找评分记录，不存在时返回 nullptr（const 供只读查询用）
 	FPlayerScoreEntry* FindEntry(FName RoleTag);
 	const FPlayerScoreEntry* FindEntry(FName RoleTag) const;
 

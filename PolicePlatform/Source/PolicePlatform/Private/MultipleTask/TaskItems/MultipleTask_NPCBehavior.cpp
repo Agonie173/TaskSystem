@@ -34,6 +34,7 @@ void UMultipleTask_NPCBehavior::StartTask_Implementation()
 				if (P && !P->IsPlayerControlled() && P->ActorHasTag(ExistingNPCTag))
 				{
 					ControlledNPCs.Add(P);
+					UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] Reusing existing NPC: %s"), *P->GetName());
 				}
 			}
 		}
@@ -88,6 +89,8 @@ void UMultipleTask_NPCBehavior::StartTask_Implementation()
 			if (NewNPC)
 			{
 				ControlledNPCs.Add(NewNPC);
+				UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] Spawned NPC %d/%d: %s at %s"),
+					i + 1, NPCCount, *NewNPC->GetName(), *OffsetLoc.ToCompactString());
 			}
 		}
 
@@ -153,6 +156,9 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 			}
 		}
 
+		UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] MoveTo target %s (acceptance %.1f)"),
+			*MoveTarget.ToCompactString(), Node.AcceptanceRadius);
+
 		UnbindMoveCompleted();
 		PendingMoveCount = 0;
 
@@ -173,6 +179,8 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 			if (MoveResult != EPathFollowingRequestResult::RequestSuccessful)
 			{
 				AICtrl->ReceiveMoveCompleted.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnMoveCompleted);
+				UE_LOG(LogTemp, Warning, TEXT("[NPCBehavior] %s MoveTo not started (result %d), skip waiting"),
+					*NPC->GetName(), (int32)MoveResult);
 				continue;
 			}
 
@@ -211,6 +219,8 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 			if (SkelMesh && Node.AnimToPlay)
 			{
 				SkelMesh->PlayAnimation(Node.AnimToPlay, false);
+				UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] Playing anim %s on %s"),
+					*Node.AnimToPlay->GetName(), *NPC->GetName());
 			}
 		}
 		AdvanceToNextNode();
@@ -244,6 +254,8 @@ void UMultipleTask_NPCBehavior::ExecuteNextNode()
 				AudioComp->Play();
 				CurrentAudioComponent = AudioComp;
 				bStarted = true;
+				UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] Playing audio %s on %s"),
+					*Node.AudioToPlay->GetName(), *NPC->GetName());
 				break; // 只等第一个 NPC 的音频播完
 			}
 		}
@@ -318,6 +330,9 @@ void UMultipleTask_NPCBehavior::OnMoveCompleted(FAIRequestID RequestID, EPathFol
 		--PendingMoveCount;
 	}
 
+	// 到位日志（含移动失败兜底的情况），便于核对多 NPC 的推进时机
+	UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] A NPC move finished, %d still moving"), PendingMoveCount);
+
 	// 还有人没走到：等最后一个到达再推进（避免第一个到达就跳过整段移动）
 	if (PendingMoveCount > 0)
 	{
@@ -343,6 +358,8 @@ void UMultipleTask_NPCBehavior::UnbindMoveCompleted()
 
 void UMultipleTask_NPCBehavior::OnPlayAudioFinished()
 {
+	UE_LOG(LogTemp, Log, TEXT("[NPCBehavior] Audio finished, advance to next node"));
+
 	if (CurrentAudioComponent)
 	{
 		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_NPCBehavior::OnPlayAudioFinished);

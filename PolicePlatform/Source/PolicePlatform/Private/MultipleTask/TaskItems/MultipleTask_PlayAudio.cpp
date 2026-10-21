@@ -35,10 +35,12 @@ void UMultipleTask_PlayAudio::StartTask_Implementation()
 	PlayID = 0;
 	if (!PlayAudioTaskInfo.IsEmpty())
 	{
+		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Task started, %d audio item(s)"), PlayAudioTaskInfo.Num());
 		StartPlayAudio();
 	}
 	else
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] PlayAudioTaskInfo is empty, task ends immediately"));
 		EndTask();
 	}
 }
@@ -69,6 +71,9 @@ void UMultipleTask_PlayAudio::StartPlayAudio()
 	}
 
 	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
+
+	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Starting item %d/%d, delay before %.2fs"),
+		PlayID + 1, PlayAudioTaskInfo.Num(), Info.DelayBeforePlayback);
 
 	// 处理播放前延迟
 	if (Info.DelayBeforePlayback > 0.f)
@@ -163,6 +168,9 @@ void UMultipleTask_PlayAudio::PlayAudioForPawn()
 		AudioComp->SetSound(Info.PlaySound);
 		AudioComp->Play();
 
+		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing sound %s on pawn %s (duration %.2fs, PlayID=%d)"),
+			*Info.PlaySound->GetName(), *TargetPawn->GetName(), Info.PlaySound->GetDuration(), PlayID);
+
 		if (Info.bNeedPlayAnim)
 		{
 			PlayAnim(TargetPawn, Info.PlayAudioSequence);
@@ -170,6 +178,7 @@ void UMultipleTask_PlayAudio::PlayAudioForPawn()
 	}
 	else
 	{
+		UE_LOG(LogTemp, Error, TEXT("[PlayAudio] Failed to create AudioComponent on %s"), *TargetPawn->GetName());
 		AudioFinished();
 	}
 }
@@ -181,6 +190,8 @@ void UMultipleTask_PlayAudio::PlayAudioForLocation()
 	UWorld* World = GetWorld();
 	if (!World || !Info.PlaySound)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] PlayAudioForLocation skipped (world %d, sound %d, PlayID=%d)"),
+			World != nullptr, Info.PlaySound != nullptr, PlayID);
 		AudioFinished();
 		return;
 	}
@@ -196,9 +207,15 @@ void UMultipleTask_PlayAudio::PlayAudioForLocation()
 		CurrentAudioComponent = SpawnedAudio;
 		SpawnedAudio->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
 		SpawnedAudio->OnAudioFinished.AddDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
+
+		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing sound %s at %s (duration %.2fs, PlayID=%d)"),
+			*Info.PlaySound->GetName(), *Info.PlayAudioLocation.ToCompactString(),
+			Info.PlaySound->GetDuration(), PlayID);
 	}
 	else
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] SpawnSoundAtLocation failed for sound %s"),
+			*Info.PlaySound->GetName());
 		AudioFinished();
 	}
 }
@@ -221,6 +238,8 @@ void UMultipleTask_PlayAudio::AudioFinished()
 	const float DelayAfter = PlayAudioTaskInfo.IsValidIndex(PlayID)
 		? PlayAudioTaskInfo[PlayID].DelayAfterPlayback
 		: 0.f;
+
+	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Item %d finished (delay after %.2fs)"), PlayID, DelayAfter);
 
 	PlayID++;
 	if (PlayAudioTaskInfo.IsValidIndex(PlayID))

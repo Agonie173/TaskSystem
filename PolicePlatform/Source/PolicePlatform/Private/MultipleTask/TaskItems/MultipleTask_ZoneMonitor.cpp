@@ -68,7 +68,12 @@ void UMultipleTask_ZoneMonitor::InitFromCurrentOverlaps()
 	TArray<AActor*> OverlappingActors;
 	Zone->GetOverlappingActors(OverlappingActors, APawn::StaticClass());
 
+	// 初始重叠扫描结果（仅日志，便于核对是否有人开局即违规）
+	UE_LOG(LogTemp, Verbose, TEXT("[ZoneMonitor] Initial overlap scan found %d pawn(s) in zone"),
+		OverlappingActors.Num());
+
 	// 只按面板受众里的参训玩家初始化，避免把观战端算进来
+	// 口径注意：这里按面板受众过滤，与事件路径（全部参训者）不一致，见类注释的已知口径差异
 	for (APlayerController* PC : ResolvePanelAudience())
 	{
 		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
@@ -106,6 +111,9 @@ void UMultipleTask_ZoneMonitor::OnActorOverlapBegin(AActor* OverlappedActor, AAc
 		return;
 	}
 
+	UE_LOG(LogTemp, Verbose, TEXT("[ZoneMonitor] OverlapBegin on %s by %s"),
+		*OverlappedActor->GetName(), *Pawn->GetName());
+
 	// 进入区域：要求待在里面时合规，要求待在外面时违规
 	SetPlayerViolating(Pawn, !bRequireInsideZone);
 }
@@ -128,6 +136,9 @@ void UMultipleTask_ZoneMonitor::OnActorOverlapEnd(AActor* OverlappedActor, AActo
 		return;
 	}
 
+	UE_LOG(LogTemp, Verbose, TEXT("[ZoneMonitor] OverlapEnd on %s by %s"),
+		*OverlappedActor->GetName(), *Pawn->GetName());
+
 	// 区域 Actor 可能有多个碰撞组件：离开其中一个不代表真的离开区域，
 	// 用实际重叠结果复核，避免误报违规
 	if (AActor* Zone = FindActorByTag(ZoneActorTag))
@@ -136,6 +147,8 @@ void UMultipleTask_ZoneMonitor::OnActorOverlapEnd(AActor* OverlappedActor, AActo
 		Zone->GetOverlappingActors(OverlappingActors, APawn::StaticClass());
 		if (OverlappingActors.Contains(Pawn))
 		{
+			UE_LOG(LogTemp, Verbose, TEXT("[ZoneMonitor] %s still overlaps zone via other component, ignore"),
+				*Pawn->GetName());
 			return;
 		}
 	}
@@ -189,6 +202,9 @@ void UMultipleTask_ZoneMonitor::ReportViolation(APawn* PlayerPawn)
 	}
 
 	ReportScoreEvent(RoleTag, ViolationErrorCode);
+
+	UE_LOG(LogTemp, Log, TEXT("[ZoneMonitor] Violation reported: role %s, code %s"),
+		*RoleTag.ToString(), *ViolationErrorCode.ToString());
 }
 
 // ==================== 面板 ====================
@@ -197,8 +213,8 @@ FTaskPanelData UMultipleTask_ZoneMonitor::BuildWarningPanelData() const
 {
 	FTaskPanelData Data = BuildPanelData();
 	Data.PanelType = WarningPanelType;
-	Data.Title = WarningTitle;
-	Data.Content = WarningContent;
+	// WarningTitle / WarningContent 不再写入面板数据（Title/Content 字段已移除）；
+	// 外层 UI 根据 WarningPanelType 自行渲染警告文本
 	return Data;
 }
 
@@ -239,6 +255,8 @@ void UMultipleTask_ZoneMonitor::RefreshComplianceTimer()
 
 	World->GetTimerManager().SetTimer(ComplianceTimerHandle, this,
 		&UMultipleTask_ZoneMonitor::HandleCompliantDurationReached, RequiredCompliantDuration, false);
+
+	UE_LOG(LogTemp, Verbose, TEXT("[ZoneMonitor] Compliance timer armed for %.1fs"), RequiredCompliantDuration);
 }
 
 void UMultipleTask_ZoneMonitor::HandleCompliantDurationReached()

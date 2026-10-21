@@ -60,6 +60,45 @@ void UTaskSequencerComponent::LoadAndStartTask(UPrimaryTaskDataAsset* InTaskAsse
 	// 新一轮训练重新选身份，避免沿用上一局的身份直接跳过 04 步
 	ClearAllRoles();
 
+	// 简化接入兜底：外层框架若没有注册流程，则把当前所有 PlayerController 视为参训玩家。
+	// 否则多人局 Participants 为空：面板受众为 0（谁都不下发）、
+	// WaitForConfirm/EquipmentConfirm 的“全员确认”永远无法达成。
+	if (Participants.Num() == 0)
+	{
+		int32 AutoRegistered = 0;
+		int32 SkippedByTag = 0;
+		for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (APlayerController* PC = It->Get())
+			{
+				// Pawn 已存在但没带合法玩家标签 → 视为像素流客户端等非玩家，跳过；
+				// Pawn 还没被占有 → 照旧注册（Pawn 可能之后才生成，任务内会兜底查找）
+				const APawn* Pawn = PC->GetPawn();
+				if (Pawn && !IsPawnValidPlayer(Pawn))
+				{
+					++SkippedByTag;
+					UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Auto register skipped (pawn has no valid player tag): %s"), *PC->GetName());
+					continue;
+				}
+
+				if (RegisterParticipant(PC))
+				{
+					++AutoRegistered;
+				}
+			}
+		}
+
+		// 全部被标签过滤掉时大概率是 Pawn 上忘了打 VRPlayer/PCPlayer 标签，给出醒目提示
+		if (AutoRegistered == 0 && SkippedByTag > 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] All %d pawn(s) skipped by ValidPlayerTags filter - check that pawns carry one of the valid player tags"),
+				SkippedByTag);
+		}
+
+		UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] No participant registered yet, auto-registered %d player controller(s)"),
+			AutoRegistered);
+	}
+
 	// 新一轮训练从零开始计分
 	if (UScoreComponent* ScoreComp = UScoreComponent::FindScoreComponent(GetWorld()))
 	{
@@ -78,10 +117,14 @@ void UTaskSequencerComponent::StopAllTasks()
 	// 在遍历过程中推进到下一步（会清空/重建 ActiveTasks 导致迭代器失效）
 	bIsRunning = false;
 	bStepStarting = false;
-	CompletedTaskCount = 0;
 
 	TArray<TObjectPtr<UMultipleTaskBase>> TasksToStop = MoveTemp(ActiveTasks);
 	ActiveTasks.Empty();
+
+	if (TasksToStop.Num() > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Stopping %d active task(s)"), TasksToStop.Num());
+	}
 
 	for (UMultipleTaskBase* Task : TasksToStop)
 	{
@@ -103,9 +146,12 @@ void UTaskSequencerComponent::SkipToStep(int32 StepIndex)
 
 	if (!CurrentTaskAsset || !CurrentTaskAsset->Steps.IsValidIndex(StepIndex))
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] SkipToStep failed: invalid index %d (total %d)"),
+			StepIndex, GetTotalStepCount());
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Skip to step %d"), StepIndex);
 	StopAllTasks();
 	bIsRunning = true;
 	ExecuteStep(StepIndex);
@@ -154,6 +200,29 @@ void UTaskSequencerComponent::NotifyChoiceMade(FName ChoiceId, APlayerController
 }
 
 // ==================== 参训玩家注册 ====================
+
+bool UTaskSequencerComponent::IsPawnValidPlayer(const APawn* Pawn) const
+{
+	if (!Pawn)
+	{
+		return false;
+	}
+
+	// 列表为空 = 未配置过滤，放行所有 Pawn（保持旧行为）
+	if (ValidPlayerTags.Num() == 0)
+	{
+		return true;
+	}
+
+	for (const FName& Tag : ValidPlayerTags)
+	{
+		if (!Tag.IsNone() && Pawn->ActorHasTag(Tag))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 
 bool UTaskSequencerComponent::RegisterParticipant(APlayerController* PC)
 {
@@ -244,6 +313,12 @@ bool UTaskSequencerComponent::AssignRole(FName RoleTag, APlayerController* PC)
 	{
 		Pawn->Tags.AddUnique(RoleTag);
 	}
+	else
+	{
+		// 占有链还没建立：依赖 Pawn Tag 兜底的任务（站位/装备等）会临时找不到该身份
+		UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] Role %s assigned to %s but pawn not possessed yet; pawn tag not synced"),
+			*RoleTag.ToString(), *PC->GetName());
+	}
 
 	UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Role %s assigned to %s"),
 		*RoleTag.ToString(), *PC->GetName());
@@ -297,13 +372,18 @@ APlayerController* UTaskSequencerComponent::GetControllerByRoleTag(FName RoleTag
 		}
 	}
 
-	// 兜底：还没走身份分配流程时，按 Pawn 上的 Tag 找
-	for (const TWeakObjectPtr<APlayerController>& Item : Participants)
+	// 兜底：还没走身份分配流程时，按 Pawn 上的 Tag 找。
+	// 这里必须遍历世界中所有 PlayerController，而不能只查 Participants：
+	// 测试关卡/简化接入往往没调用 RegisterParticipant，只给 Pawn 打了身份 Tag。
+	if (UWorld* World = GetWorld())
 	{
-		APlayerController* PC = Item.Get();
-		if (PC && PC->GetPawn() && PC->GetPawn()->ActorHasTag(RoleTag))
+		for (TActorIterator<APlayerController> It(World); It; ++It)
 		{
-			return PC;
+			APlayerController* PC = *It;
+			if (PC && PC->GetPawn() && PC->GetPawn()->ActorHasTag(RoleTag))
+			{
+				return PC;
+			}
 		}
 	}
 	return nullptr;
@@ -332,6 +412,7 @@ void UTaskSequencerComponent::ClearAllRoles()
 		return;
 	}
 
+	const int32 ClearedCount = RoleAssignments.Num();
 	for (auto It = RoleAssignments.CreateIterator(); It; ++It)
 	{
 		if (It.Value().IsValid())
@@ -344,6 +425,7 @@ void UTaskSequencerComponent::ClearAllRoles()
 		It.RemoveCurrent();
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Cleared %d role assignment(s)"), ClearedCount);
 	RefreshOccupiedRoles();
 }
 
@@ -382,6 +464,7 @@ void UTaskSequencerComponent::OnRep_OccupiedRoles()
 void UTaskSequencerComponent::OnRep_CurrentStepIndex()
 {
 	// 服务器直接广播过 OnStepStarted，这里只负责客户端侧的 HUD 刷新
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] Client OnRep_CurrentStepIndex: %d"), CurrentStepIndex);
 	if (CurrentStepIndex >= 0)
 	{
 		OnStepStarted.Broadcast(CurrentStepIndex);
@@ -392,6 +475,9 @@ void UTaskSequencerComponent::OnRep_CurrentStepIndex()
 
 void UTaskSequencerComponent::ForwardOverlapBegin(AActor* OverlappedActor, AActor* OtherActor)
 {
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] OverlapBegin forwarded: trigger=%s other=%s"),
+		*GetNameSafe(OverlappedActor), *GetNameSafe(OtherActor));
+
 	// 复制一份快照：任务在 EndTask 时可能改写 ActiveTasks
 	TArray<TObjectPtr<UMultipleTaskBase>> Snapshot = ActiveTasks;
 	for (UMultipleTaskBase* Task : Snapshot)
@@ -405,6 +491,9 @@ void UTaskSequencerComponent::ForwardOverlapBegin(AActor* OverlappedActor, AActo
 
 void UTaskSequencerComponent::ForwardOverlapEnd(AActor* OverlappedActor, AActor* OtherActor)
 {
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] OverlapEnd forwarded: trigger=%s other=%s"),
+		*GetNameSafe(OverlappedActor), *GetNameSafe(OtherActor));
+
 	TArray<TObjectPtr<UMultipleTaskBase>> Snapshot = ActiveTasks;
 	for (UMultipleTaskBase* Task : Snapshot)
 	{
@@ -419,9 +508,36 @@ void UTaskSequencerComponent::ForwardOverlapEnd(AActor* OverlappedActor, AActor*
 
 APawn* UTaskSequencerComponent::GetPawnByRoleTag(FName RoleTag) const
 {
-	if (APlayerController* PC = GetControllerByRoleTag(RoleTag))
+	if (RoleTag.IsNone())
 	{
-		return PC->GetPawn();
+		return nullptr;
+	}
+
+	// 真相源：AssignRole 写入的控制器映射
+	if (const TWeakObjectPtr<APlayerController>* Found = RoleAssignments.Find(RoleTag))
+	{
+		if (APlayerController* PC = Found->Get())
+		{
+			if (APawn* Pawn = PC->GetPawn())
+			{
+				return Pawn;
+			}
+		}
+	}
+
+	// 兜底：直接按 Pawn 自身的 Tag 找。
+	// 不能只经由 PlayerController（PC->GetPawn()）——测试关卡里 Pawn 可能
+	// 尚未被 PC 占有或不在占有链上，但身份 Tag 就打在 Pawn 上。
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<APawn> It(World); It; ++It)
+		{
+			APawn* Pawn = *It;
+			if (Pawn && Pawn->ActorHasTag(RoleTag))
+			{
+				return Pawn;
+			}
+		}
 	}
 	return nullptr;
 }
@@ -525,7 +641,21 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 		return;
 	}
 
-	// 清理上一步的运行时实例
+	// 先进入"启动中"状态再清理与广播：后续对旧任务调 EndTask 会广播 OnTaskEnd，
+	// bStepStarting 挡住 CheckStepCompletion 防止清理期间重入推进；
+	// 同时防止监听者在回调里 Stop/Skip 与后续实例化交错
+	bStepStarting = true;
+
+	// 清理上一步的运行时实例：先结束残留任务——阻塞类早已自行 EndTask（幂等无副作用），
+	// 实际被这里收尾的是纯展示/提示类非阻塞任务（UIPanelDisplay / WidgetDisplay），
+	// 它们的 UI 组件在各自 EndTask 里统一销毁
+	for (UMultipleTaskBase* OldTask : ActiveTasks)
+	{
+		if (OldTask)
+		{
+			OldTask->EndTask();
+		}
+	}
 	for (UMultipleTaskBase* OldTask : ActiveTasks)
 	{
 		if (OldTask)
@@ -534,15 +664,12 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 		}
 	}
 	ActiveTasks.Empty();
-	CompletedTaskCount = 0;
 	CurrentStepIndex = StepIndex;
 
 	const FTaskStep& Step = CurrentTaskAsset->Steps[StepIndex];
 	UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Step %d: %s (%d parallel tasks)"),
 		StepIndex, *Step.StepTitle.ToString(), Step.ParallelTasks.Num());
 
-	// 先进入“启动中”状态再广播：防止监听者在回调里 Stop/Skip 与后续实例化交错
-	bStepStarting = true;
 	OnStepStarted.Broadcast(StepIndex);
 
 	// 第一阶段：全部实例化并挂回调，此阶段不启动任何任务
@@ -550,7 +677,7 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 	{
 		if (!SourceTask)
 		{
-			CompletedTaskCount++;
+			UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] Step %d has a null ParallelTasks entry, skipped"), StepIndex);
 			continue;
 		}
 
@@ -559,7 +686,7 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 		UMultipleTaskBase* TaskInstance = DuplicateObject<UMultipleTaskBase>(SourceTask, this);
 		if (!TaskInstance)
 		{
-			CompletedTaskCount++;
+			UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] Step %d: DuplicateObject failed for task template, skipped"), StepIndex);
 			continue;
 		}
 
@@ -576,6 +703,7 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 	{
 		if (Task)
 		{
+			UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] Starting task: %s"), *Task->GetName());
 			Task->StartTask();
 		}
 	}
@@ -591,7 +719,17 @@ void UTaskSequencerComponent::CheckStepCompletion()
 		return;
 	}
 
-	if (CompletedTaskCount < ActiveTasks.Num())
+	// 只等阻塞任务结束——非阻塞任务（如 UIPanelDisplay）的存活不影响步骤推进
+	int32 BlockingTasksRemaining = 0;
+	for (UMultipleTaskBase* Task : ActiveTasks)
+	{
+		if (Task && Task->ShouldBlockStepCompletion() && !Task->bTaskEnded)
+		{
+			BlockingTasksRemaining++;
+		}
+	}
+
+	if (BlockingTasksRemaining > 0)
 	{
 		return;
 	}
@@ -607,6 +745,16 @@ void UTaskSequencerComponent::CheckStepCompletion()
 	else
 	{
 		bIsRunning = false;
+
+		// 收尾：结束残留的非阻塞任务（纯展示面板/世界 Widget 提示等），
+		// 让它们在 EndTask 里销毁自己的 UI；bIsRunning=false 已挡住 HandleTaskEnd 重入
+		for (UMultipleTaskBase* Task : ActiveTasks)
+		{
+			if (Task)
+			{
+				Task->EndTask();
+			}
+		}
 
 		for (UMultipleTaskBase* Task : ActiveTasks)
 		{
@@ -635,6 +783,7 @@ void UTaskSequencerComponent::HandleTaskEnd(UMultipleTaskBase* EndedTask)
 		return;
 	}
 
-	CompletedTaskCount++;
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] Task ended: %s (blocking=%d)"),
+		*EndedTask->GetName(), EndedTask->ShouldBlockStepCompletion() ? 1 : 0);
 	CheckStepCompletion();
 }

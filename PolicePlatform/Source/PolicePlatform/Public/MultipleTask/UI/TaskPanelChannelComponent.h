@@ -24,6 +24,24 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTaskPanelActionSubmitted,
  *   1. 服务器把面板数据写到复制属性 → 客户端 OnRep 通知外层 UI；
  *   2. 客户端把按钮 Id 通过 Server RPC 回传服务器 → 服务器广播给任务。
  *
+ * 为什么必须挂 PlayerState 而不是 GameState：
+ *   UE 的 Server RPC 依赖 Actor 的 Owner 链找到对应的客户端连接（NetConnection）。
+ *   PlayerState 的 Owner 最终指向该玩家的 PlayerController，RPC 能正确路由到拥有者客户端；
+ *   而 GameState 没有指向具体玩家的 Owner 链，其上组件发出的 Server RPC 会被引擎
+ *   静默丢弃（无报错），表现为"客户端点了按钮、服务器永远收不到"。所以本组件必须由
+ *   外层框架挂到每个玩家的 PlayerState 上（或依赖 FindOrCreateChannel 服务器自动补挂）。
+ *
+ * PanelId 防过期点击：
+ *   每份面板数据自带 PanelId，客户端回传按钮时会连同 PanelId 一起提交，服务器校验
+ *   与当前显示的 PanelId 一致才广播。并行任务替换/关闭面板后，旧面板上的迟到的点击
+ *   会被丢弃，避免误触发已结束的任务分支。
+ *
+ * OnRep 手动调用约定：
+ *   服务器写入复制属性（CurrentPanel/bPanelVisible）后，专用服务器（DS）上客户端会
+ *   通过复制回调 OnRep_PanelState 收到通知；但单机/监听服务器上本地玩家与服务器共用
+ *   同一对象，收不到复制回调，因此服务器写完属性后必须手动调用一次 OnRep_PanelState
+ *   让本地 UI 立即刷新（见 ShowPanel/HidePanel 的实现）。
+ *
  * 不包含任何平台判断，也不创建 Widget。PC 端加视口、VR 端用 WidgetComponent
  * 之类的显示决策全部由外层框架的 UI 蓝图完成（读 GetPanel() + 绑 OnPanelStateChanged）。
  *
@@ -68,6 +86,7 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
 	const FTaskPanelData& GetPanel() const { return CurrentPanel; }
 
+	/** 当前面板是否可见（客户端 UI 判断是否渲染） */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
 	bool IsPanelVisible() const { return bPanelVisible; }
 
@@ -92,9 +111,11 @@ public:
 protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	// 客户端按钮回传（Server RPC，可靠）；组件必须挂 PlayerState 才有合法 Owner 链，挂在 GameState 上会被引擎静默丢弃
 	UFUNCTION(Server, Reliable)
 	void Server_SubmitPanelButton(FName PanelId, FName ButtonId, int32 RowIndex);
 
+	// 复制回调：向本地 UI 广播 OnPanelStateChanged；非专用服务器的服务器端写属性后需手动调用
 	UFUNCTION()
 	void OnRep_PanelState();
 
@@ -102,9 +123,11 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_PanelState)
 	FTaskPanelData CurrentPanel;
 
+	// 当前面板可见性（与 CurrentPanel 一起复制，服务器写入后同样依赖 OnRep 通知）
 	UPROPERTY(ReplicatedUsing = OnRep_PanelState)
 	bool bPanelVisible = false;
 
 private:
+	// 校验可见性/按钮 Id 后广播 OnPanelActionSubmitted（服务器本地调用与 Server RPC 落地共用）
 	void SubmitPanelButtonInternal(FName ButtonId, int32 RowIndex);
 };

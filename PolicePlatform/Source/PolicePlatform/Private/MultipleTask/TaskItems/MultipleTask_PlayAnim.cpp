@@ -30,6 +30,8 @@ void UMultipleTask_PlayAnim::StartTask_Implementation()
 		return;
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Target pawn: %s"), *CachedTargetPawn->GetName());
+
 	CurrentAnimIndex = 0;
 	CurrentLoopCount = 0;
 
@@ -71,12 +73,16 @@ bool UMultipleTask_PlayAnim::PlayAnimOnTarget(UAnimSequenceBase* AnimToPlay)
 	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimToPlay))
 	{
 		SkelMesh->PlayAnimation(Seq, false);
+		UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Playing sequence %s on %s"),
+			*Seq->GetName(), *CachedTargetPawn->GetName());
 		return true;
 	}
 
 	if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimToPlay))
 	{
 		SkelMesh->PlayAnimation(Montage, false);
+		UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Playing montage %s on %s"),
+			*Montage->GetName(), *CachedTargetPawn->GetName());
 		return true;
 	}
 
@@ -121,6 +127,7 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 	if (World)
 	{
 		const float Duration = FMath::Max(AnimToPlay->GetPlayLength(), 0.01f);
+		UE_LOG(LogTemp, Verbose, TEXT("[PlayAnim] Wait %.2fs for anim end (index %d)"), Duration, CurrentAnimIndex);
 		World->GetTimerManager().SetTimer(AnimTimerHandle, this,
 			&UMultipleTask_PlayAnim::OnSingleAnimEnd, Duration, false);
 	}
@@ -133,6 +140,9 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 void UMultipleTask_PlayAnim::OnSingleAnimEnd()
 {
 	CurrentAnimIndex++;
+
+	UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Segment ended (next index %d, loop %d, loop count %d)"),
+		CurrentAnimIndex, CurrentLoopCount, LoopCount);
 
 	bool bHasMoreAnims = false;
 	if (bNeedMultipleAnim)

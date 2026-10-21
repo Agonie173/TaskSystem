@@ -7,8 +7,6 @@
 UMultipleTask_EndTraining::UMultipleTask_EndTraining()
 {
 	PanelType = EUIPanelType::EventInfo;
-	PanelTitle = FText::FromString(TEXT("本次训练完成"));
-	PanelContent = FText::FromString(TEXT("持械对峙处置、结果上报、人员伤情排查和装备清点均已完成。"));
 
 	ReturnToListButtonText = FText::FromString(TEXT("返回课件列表"));
 	RestartButtonText = FText::FromString(TEXT("重新训练本课件"));

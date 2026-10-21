@@ -84,8 +84,26 @@ struct FNPCBehaviorNode
 };
 
 /**
- * NPC 行为任务：
- * 控制 NPC 的完整行为序列：生成 → 移动 → 停留 → 播动画 → 播音频 → 销毁
+ * NPC 行为任务（NPC 走位/演出序列）：
+ * 控制 NPC 的完整行为序列：生成（或接管已有 Pawn）→ 移动 → 停留 → 播动画 → 播音频 → 销毁。
+ *
+ * 设计原因：把 NPC 演出抽象成数据化节点序列（FNPCBehaviorNode），
+ * 策划在任务资产里按需编排而无需写代码；多个 NPC 时 MoveTo 节点等全部到达才推进，
+ * 单个提前到达不会跳过整段移动。
+ *
+ * 用法：
+ *  - 生成模式：配置 NPCClass + SpawnPointTag（或直接坐标），任务开始时动态 Spawn NPCCount 个；
+ *  - 接管模式：勾选 bUseExistingNPC 并配 ExistingNPCTag，按 Tag 复用关卡里已有的非玩家 Pawn。
+ *  移动统一由 AAIController::MoveToLocation 驱动（直接坐标或 Tag 指向的 Actor 位置），
+ *  到位（或移动失败兜底）后推进下一节点。
+ *
+ * 坑（bReplicates / 网络语义）：本任务只在服务器执行。
+ *  - 动态 Spawn 的 Pawn 即使类配置了 bReplicates，其走位表现也依赖组件同步：
+ *    只有 Character（带 CharacterMovementComponent）的位置才会复制到客户端，
+ *    纯 Pawn 被 AI 控制器移动时客户端完全看不到位移；
+ *  - AIController 本身不复制，行为序列的动画/音频触发也没有任何 RPC/属性同步驱动，
+ *    所以整个演出在 DS 下客户端不可见（已知限制，注释如实记录）；
+ *  - 若需客户端可见，应使用关卡预放置的已复制 Character，或自行扩展表现同步。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_NPCBehavior : public UMultipleTaskBase
@@ -93,7 +111,9 @@ class POLICEPLATFORM_API UMultipleTask_NPCBehavior : public UMultipleTaskBase
 	GENERATED_BODY()
 
 public:
+	/** 任务开始：按配置生成或接管 NPC，随后逐节点执行行为序列（仅服务器） */
 	virtual void StartTask_Implementation() override;
+	/** 任务结束：清理委托/定时器，按 bAutoDestroyOnEnd 决定是否销毁生成的 NPC */
 	virtual void EndTask_Implementation() override;
 
 	// ==================== NPC 配置 ====================
@@ -127,7 +147,7 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Spawn",
 		meta = (EditCondition = "bUseExistingNPC == false && SpawnPointTag == None", EditConditionHides))
-	FRotator SpawnRotation = FRotator::ZeroRotator;
+	FRotator SpawnRotation = FRotator::ZeroRotator; // 直接坐标模式下的初始朝向
 
 	// 行为序列
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Behavior")
@@ -142,6 +162,7 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<APawn>> ControlledNPCs;
 
+	// 当前执行到的行为节点下标（-1 = 未开始）
 	int32 CurrentBehaviorIndex = -1;
 
 	/** 当前 MoveTo 节点还没走完的 NPC 数量（多 NPC 时全部到达才推进） */
@@ -158,6 +179,7 @@ private:
 	/** 节点等待/延时定时器（成员持有，EndTask 时清理） */
 	FTimerHandle NodeTimerHandle;
 
+	/** 执行下一个行为节点（序列推进的总入口，越界即结束任务） */
 	void ExecuteNextNode();
 
 	UFUNCTION()
@@ -166,9 +188,11 @@ private:
 	UFUNCTION()
 	void OnPlayAudioFinished();
 
+	/** 动画播完回调（预留接口，当前未绑定任何委托） */
 	UFUNCTION()
 	void OnAnimPlayed();
 
+	/** 处理节点间延时（DelayBeforeNext）后推进到下一节点 */
 	void AdvanceToNextNode();
 
 	/** 解绑所有移动完成委托 */

@@ -1,4 +1,13 @@
 ﻿// 任务系统调试工具（仅非 Shipping 编译）
+//
+// 本文件是所有 Task.* 调试控制台命令的注册入口与实现：
+//   Task.Help / Task.Dump / Task.Validate [AssetPath] / Task.Skip <N> /
+//   Task.Finish <ClassName|All> / Task.Restart / Task.Roles / Task.Panels /
+//   Task.Scores / Task.Debug <0|1>（cvar，场景 Tag/区域可视化 + 左上角 HUD）。
+// 校验逻辑按任务类逐个 Cast 检查配表问题（缺引用、空配置、非法数值等），
+// 结果以 [错误]/[警告]/[提示] 前缀输出。模块启动时调用
+// FTaskDebug::RegisterConsoleCommands() 注册（幂等）。Shipping 构建下
+// 全部内容被 #if !UE_BUILD_SHIPPING 裁剪，不影响正式包。
 
 #include "Debug/TaskDebug.h"
 
@@ -8,6 +17,7 @@
 #include "MultipleTask/Data/PrimaryTaskDataAsset.h"
 #include "MultipleTask/TaskItems/MultipleTaskBase.h"
 #include "MultipleTask/TaskItems/MultipleTask_UIPanelDisplay.h"
+#include "MultipleTask/TaskItems/MultipleTask_WidgetDisplay.h"
 #include "MultipleTask/TaskItems/MultipleTask_WaitForConfirm.h"
 #include "MultipleTask/TaskItems/MultipleTask_RoleSelect.h"
 #include "MultipleTask/TaskItems/MultipleTask_MultiStationArrival.h"
@@ -158,10 +168,11 @@ namespace
 		// ---------- 面板展示 ----------
 		if (const UMultipleTask_UIPanelDisplay* Panel = Cast<UMultipleTask_UIPanelDisplay>(Task))
 		{
-			if (Panel->AutoCloseDelay <= 0.f)
+			// 非阻塞任务：AutoCloseDelay=0（跟随步骤生命周期）与 >0（定时关闭）均为合法配置
+			if (Panel->AutoCloseDelay > 0.f && Panel->AutoCloseDelay < 0.5f)
 			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-					TEXT("AutoCloseDelay = 0，面板永不关闭，步骤会永久卡住"));
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("AutoCloseDelay 过短（<0.5s），面板可能一闪而过"));
 			}
 		}
 		// ---------- 等待确认 ----------
@@ -497,6 +508,9 @@ namespace
 		// ---------- 语音识别 ----------
 		else if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
 		{
+			// 注意：下方提示文案与实际行为相反——MultipleTask_VoiceRecognitionWait 的
+			// 匹配逻辑里 RequiredKeyWords 为空意味着"不过滤"，任何语音都会判定通过，
+			// 并非"无法通过"。保留原文案仅为兼容既有输出，排查时以本注释为准。
 			if (Voice->RequiredKeyWords.Num() == 0)
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("RequiredKeyWords 为空，任何语音都无法通过"));
@@ -526,6 +540,29 @@ namespace
 			if (EndTraining->ReturnToListButtonText.IsEmpty() && EndTraining->RestartButtonText.IsEmpty())
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("两个按钮文字都为空"));
+			}
+		}
+		// ---------- 世界空间 Widget 提示 ----------
+		else if (const UMultipleTask_WidgetDisplay* WidgetTask = Cast<UMultipleTask_WidgetDisplay>(Task))
+		{
+			if (WidgetTask->WidgetClass == nullptr)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("WidgetClass 为空，不会生成任何提示 Widget"));
+			}
+			if (WidgetTask->AttachComponentTag.IsNone())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("AttachComponentTag 为空，Widget 将直接挂在 Pawn 根组件上"));
+			}
+			if (WidgetTask->Audience == EPanelAudience::SpecificRoles && WidgetTask->TargetRoleTags.Num() == 0)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
+					TEXT("Audience = SpecificRoles 但 TargetRoleTags 为空，没有受众"));
+			}
+			if (!WidgetTask->bDrawAtDesiredSize && (WidgetTask->DrawSize.X <= 0.f || WidgetTask->DrawSize.Y <= 0.f))
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("bDrawAtDesiredSize = false 但 DrawSize 存在非正值，Widget 可能无法显示"));
 			}
 		}
 
@@ -995,11 +1032,11 @@ namespace
 			}
 
 			const FTaskPanelData& Panel = Channel->GetPanel();
-			Ar.Logf(TEXT("  %s：可见=%s  PanelId=%s  标题=%s"),
+			Ar.Logf(TEXT("  %s：可见=%s  PanelId=%s  PanelType=%d"),
 				*PC->GetName(),
 				Channel->IsPanelVisible() ? TEXT("是") : TEXT("否"),
 				*Panel.PanelId.ToString(),
-				*Panel.Title.ToString());
+				(int32)Panel.PanelType);
 		}
 	}
 
@@ -1267,8 +1304,24 @@ void FTaskDebugVisualizer::Tick(float DeltaTime)
 				Task->TaskName.IsNone() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *Task->TaskName.ToString()));
 		}
 
-		Hud += FString::Printf(TEXT("  Completed %d/%d\n"),
-			Sequencer->GetCompletedTaskCountForDebug(), ActiveTasks.Num());
+		// 动态计算阻塞任务的完成进度（非阻塞任务不计入）
+		int32 BlockingCompleted = 0;
+		int32 BlockingTotal = 0;
+		for (UMultipleTaskBase* TaskPtr : ActiveTasks)
+		{
+			UMultipleTaskBase* Task = TaskPtr;
+			if (Task && Task->ShouldBlockStepCompletion())
+			{
+				BlockingTotal++;
+				if (Task->bTaskEnded)
+				{
+					BlockingCompleted++;
+				}
+			}
+		}
+
+		Hud += FString::Printf(TEXT("  Blocking completed %d/%d (total active %d)\n"),
+			BlockingCompleted, BlockingTotal, ActiveTasks.Num());
 
 		for (APlayerController* PC : Sequencer->GetParticipants())
 		{

@@ -20,11 +20,27 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnRoleOccupancyChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTaskChoiceMade, FName, ChoiceId, APlayerController*, Player);
 
 /**
- * 任务序列驱动器：挂在 GameState 上，服务器权威
- * 负责顺序执行 FTaskStep，并行启动每个 Step 内的 TaskItems
+ * 任务序列驱动器：挂在 GameState 上，服务器权威。
  *
- * 注意：本组件不会被客户端以 Server RPC 方式调用（GameState 没有 Owner 链），
- * 客户端交互入口由外层框架负责，最终调用本组件的 BlueprintCallable 接口。
+ * 设计说明：
+ * - 全局唯一且生命周期跟随对局，所以挂 GameState 而非 GameMode（GameMode 不会复制到客户端，
+ *   客户端 HUD 需要读取步骤进度）。
+ * - 按顺序执行 Steps[]；每个 Step 内的 ParallelTasks 用 DuplicateObject 实例化后并行启动，
+ *   全部任务 EndTask 后自动推进下一步。实例化分两阶段：先全部创建并挂好 OnTaskEnd 回调，
+ *   再统一 StartTask——防止某个任务在 StartTask 内立刻结束时计数不完整导致提前推进。
+ * - 任务实例只存在于服务器；客户端只能看到三个复制属性：
+ *   CurrentStepIndex（步骤进度）、bIsRunning（运行中）、ReplicatedOccupiedRoles（身份占用）。
+ *
+ * 使用方式：
+ * - 玩家进场时 RegisterParticipant(PC)（内部会自动创建面板通道）；
+ * - 开始训练 LoadAndStartTask(DataAsset)；重新开始会 ClearAllRoles + ResetScores；
+ * - 关卡触发盒把 Overlap 事件转发到 ForwardOverlapBegin/End（ASuspectPawn 已内置转发，
+ *   普通 TriggerVolume 需要框架/关卡蓝图接线）。
+ *
+ * 注意事项：
+ * - 本组件不能发 Server RPC：GameState 没有 Owner 链，RPC 会被 UE 静默丢弃；
+ *   客户端交互必须经 PlayerState 上的 UTaskPanelChannelComponent。
+ * - StopAllTasks 先摘回调再 EndTask，防止 EndTask 广播触发 CheckStepCompletion 重入推进。
  */
 UCLASS(ClassGroup = (PolicePlatform), meta = (BlueprintSpawnableComponent))
 class POLICEPLATFORM_API UTaskSequencerComponent : public UActorComponent
@@ -38,7 +54,11 @@ public:
 
 	// ==================== 任务流程 ====================
 
-	/** 加载任务配表并开始执行 Step 0（仅服务器） */
+	/**
+	 * 加载任务配表并开始执行 Step 0（仅服务器）。
+	 * 若此前没有任何玩家调用 RegisterParticipant，会把当时连接的所有 PlayerController
+	 * 自动注册为参训玩家（简化接入兜底）；晚于此刻加入的玩家仍需框架在 PostLogin 里注册。
+	 */
 	UFUNCTION(BlueprintCallable, Category = "TaskSequencer")
 	void LoadAndStartTask(UPrimaryTaskDataAsset* InTaskAsset);
 
@@ -79,6 +99,20 @@ public:
 	// ==================== 参训玩家注册（由外层框架在玩家进场时调用） ====================
 
 	/**
+	 * 合法参训玩家的识别标签（Pawn 上必须带其中之一才被视为真人玩家）。
+	 * 用于把像素流客户端、观战镜头等非玩家 Pawn 挡在受众之外：
+	 * 自动注册兜底与各任务的受众解析都按该列表过滤。
+	 * 默认 VRPlayer / PCPlayer，由外层在玩家初始化时给 Pawn 打上对应标签。
+	 * 列表为空时不做过滤（全部放行）。
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "TaskSequencer|Participants")
+	TArray<FName> ValidPlayerTags = { FName(TEXT("VRPlayer")), FName(TEXT("PCPlayer")) };
+
+	/** 该 Pawn 是否是合法参训玩家（带 ValidPlayerTags 中任一标签；列表为空时放行） */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskSequencer|Participants")
+	bool IsPawnValidPlayer(const APawn* Pawn) const;
+
+	/**
 	 * 注册一名参训玩家。只有注册过的玩家才会被计入
 	 * “所有玩家都完成”这类判定，监看端/观战端不需要调用。
 	 * 仅服务器生效。
@@ -93,6 +127,8 @@ public:
 	/**
 	 * 为参训玩家分配身份（1号/2号/3号）。
 	 * 角色不可重复占用：已被占用时返回 false，由调用方决定是否允许切换。
+	 * 分配成功会把 RoleTag 写到该玩家当前 Pawn 的 Tags 上（供 ActorHasTag 类判定使用）；
+	 * 真相源始终是 RoleAssignments 映射。
 	 */
 	UFUNCTION(BlueprintCallable, Category = "TaskSequencer|Participants")
 	bool AssignRole(FName RoleTag, APlayerController* PC);
@@ -105,7 +141,12 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskSequencer|Participants")
 	TArray<APlayerController*> GetParticipants() const;
 
-	/** 根据身份 Tag 获取 PlayerController */
+	/**
+	 * 根据身份 Tag 获取 PlayerController。
+	 * 查找顺序：① RoleAssignments（AssignRole 写入的真相源）；
+	 * ② 兜底遍历世界中所有 PlayerController，按其当前 Pawn 上的身份 Tag 匹配
+	 *   （兼容未走 RegisterParticipant/AssignRole 流程、直接给 Pawn 打 Tag 的测试关卡）。
+	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskSequencer|Participants")
 	APlayerController* GetControllerByRoleTag(FName RoleTag) const;
 
@@ -133,7 +174,13 @@ public:
 
 	// ==================== 辅助查询接口（TaskItem 调用） ====================
 
-	/** 根据身份 Tag 查找对应的 Pawn */
+	/**
+	 * 根据身份 Tag 查找对应的 Pawn。
+	 * 查找顺序：① RoleAssignments 真相源 → 取该控制器的当前 Pawn；
+	 * ② 兜底直接遍历世界所有 APawn，按 Pawn 自身 Tag 匹配——不依赖占有链，
+	 *   因为测试关卡里 Pawn 可能尚未被 PlayerController 占有，或根本不走占有流程。
+	 * 注意：若多个 Pawn 带同一 Tag，返回迭代顺序中的第一个。
+	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskSequencer|Utility")
 	APawn* GetPawnByRoleTag(FName RoleTag) const;
 
@@ -153,9 +200,6 @@ public:
 
 	/** 调试用：当前步骤的活跃任务（只读） */
 	const TArray<TObjectPtr<UMultipleTaskBase>>& GetActiveTasksForDebug() const { return ActiveTasks; }
-
-	/** 调试用：当前步骤已完成任务数 */
-	int32 GetCompletedTaskCountForDebug() const { return CompletedTaskCount; }
 
 	/** 调试用：当前加载的任务配表 */
 	UPrimaryTaskDataAsset* GetCurrentTaskAssetForDebug() const { return CurrentTaskAsset; }
@@ -210,10 +254,6 @@ protected:
 	/** 当前 Step 内活跃的任务实例（由配表中的模板 Duplicate 而来，运行时独享） */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMultipleTaskBase>> ActiveTasks;
-
-	/** 当前 Step 已完成的任务计数 */
-	UPROPERTY()
-	int32 CompletedTaskCount = 0;
 
 	/** 正在批量创建/启动任务，此期间禁止推进步骤（防止迭代中重入） */
 	bool bStepStarting = false;

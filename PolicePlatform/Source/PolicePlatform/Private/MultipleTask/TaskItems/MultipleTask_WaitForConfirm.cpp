@@ -15,11 +15,13 @@ void UMultipleTask_WaitForConfirm::StartTask_Implementation()
 	ConfirmedRoleTags.Empty();
 	ConfirmedControllers.Empty();
 
-	UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Task started: Title=%s, Policy=%d"),
-		*PanelTitle.ToString(), (int32)ConfirmPolicy);
+	UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Task started: Policy=%d"),
+		(int32)ConfirmPolicy);
 
 	// 基类负责下发面板并绑定按钮回传
 	Super::StartTask_Implementation();
+
+	UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Confirm panel pushed to %d player(s)"), ResolvePanelAudience().Num());
 }
 
 FTaskPanelData UMultipleTask_WaitForConfirm::BuildPanelData() const
@@ -32,6 +34,11 @@ FTaskPanelData UMultipleTask_WaitForConfirm::BuildPanelData() const
 		ConfirmButton.ButtonId = ConfirmButtonId;
 		ConfirmButton.Label = ConfirmButtonText;
 		Data.Buttons.Add(ConfirmButton);
+	}
+	else
+	{
+		// 没有确认按钮时玩家无法通过面板确认，任务可能永远无法达成
+		UE_LOG(LogTemp, Warning, TEXT("[WaitForConfirm] ConfirmButtonText is empty, no confirm button added"));
 	}
 
 	return Data;
@@ -94,6 +101,8 @@ void UMultipleTask_WaitForConfirm::ReportPlayerConfirmedByController(APlayerCont
 		if (!RoleTag.IsNone())
 		{
 			ConfirmedRoleTags.Add(RoleTag);
+
+			UE_LOG(LogTemp, Verbose, TEXT("[WaitForConfirm] Controller %s mapped to role %s"), *PC->GetName(), *RoleTag.ToString());
 		}
 	}
 
@@ -149,6 +158,8 @@ void UMultipleTask_WaitForConfirm::CheckCompletion()
 					}
 				}
 				bAllMet = (Confirmed >= Participants.Num());
+
+				UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Progress: %d/%d participants confirmed (policy=AllPlayers)"), Confirmed, Participants.Num());
 			}
 			else
 			{
@@ -170,12 +181,16 @@ void UMultipleTask_WaitForConfirm::CheckCompletion()
 					}
 				}
 				bAllMet = (AllPawns.Num() > 0 && Confirmed >= AllPawns.Num());
+
+				UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Progress: %d/%d pawns confirmed (policy=AllPlayers, fallback)"), Confirmed, AllPawns.Num());
 			}
 		}
 		break;
 	}
 	case EConfirmPolicy::AnyPlayer:
 		bAllMet = ConfirmedRoleTags.Num() > 0 || ConfirmedControllers.Num() > 0;
+
+		UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Progress: %d role(s), %d controller(s) confirmed (policy=AnyPlayer, need 1)"), ConfirmedRoleTags.Num(), ConfirmedControllers.Num());
 		break;
 
 	case EConfirmPolicy::SpecificRoles:
@@ -189,10 +204,14 @@ void UMultipleTask_WaitForConfirm::CheckCompletion()
 			}
 		}
 		bAllMet = (AllConfirmed >= SpecificRoleTags.Num());
+
+		UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Progress: %d/%d required roles confirmed (policy=SpecificRoles)"), AllConfirmed, SpecificRoleTags.Num());
 		break;
 	}
 	case EConfirmPolicy::FirstRole_1:
 		bAllMet = ConfirmedRoleTags.Contains(FName(TEXT("Role_1")));
+
+		UE_LOG(LogTemp, Log, TEXT("[WaitForConfirm] Progress: Role_1 %s (policy=FirstRole_1)"), bAllMet ? TEXT("confirmed") : TEXT("pending"));
 		break;
 	}
 

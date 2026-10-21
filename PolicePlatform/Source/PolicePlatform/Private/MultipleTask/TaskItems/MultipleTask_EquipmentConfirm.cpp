@@ -21,10 +21,9 @@ namespace
 
 UMultipleTask_EquipmentConfirm::UMultipleTask_EquipmentConfirm()
 {
+	// 面板默认类型与文案（可在派生 BP 里覆盖）
 	PanelType = EUIPanelType::EquipmentCheck;
-	PanelTitle = FText::FromString(TEXT("自主选择装备"));
-	PanelContent = FText::FromString(TEXT("请根据研判和岗位分工领取装备，确认后将按标准装备继续。"));
-	ConfirmButtonText = FText::FromString(TEXT("确认装备并继续"));
+		ConfirmButtonText = FText::FromString(TEXT("确认装备并继续"));
 }
 
 // ==================== 生命周期 ====================
@@ -76,6 +75,24 @@ void UMultipleTask_EquipmentConfirm::HandlePanelAction_Implementation(APlayerCon
 
 	// 刷新全员面板，显示谁已确认
 	PushPanelToAudience();
+
+	// 调试日志：回执进度（在座身份中已确认 x/y）
+	int32 PresentRoleCount = 0;
+	int32 ConfirmedPresentCount = 0;
+	for (const FRoleEquipmentTags& Standard : StandardEquipment)
+	{
+		if (!IsRolePresent(Standard.RoleTag))
+		{
+			continue;
+		}
+		++PresentRoleCount;
+		if (IsRoleConfirmed(Standard.RoleTag))
+		{
+			++ConfirmedPresentCount;
+		}
+	}
+	UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] Confirm progress: %d/%d present role(s) confirmed"),
+		ConfirmedPresentCount, PresentRoleCount);
 
 	if (AreAllRolesConfirmed())
 	{
@@ -130,10 +147,14 @@ void UMultipleTask_EquipmentConfirm::EvaluateAndFinish()
 
 		if (Missing.Num() > 0)
 		{
+			UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] Report missing-equipment error '%s' for role %s"),
+				*MissingEquipmentErrorCode.ToString(), *Standard.RoleTag.ToString());
 			ReportScoreEvent(Standard.RoleTag, MissingEquipmentErrorCode);
 		}
 		if (Wrong.Num() > 0)
 		{
+			UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] Report wrong-equipment error '%s' for role %s"),
+				*WrongEquipmentErrorCode.ToString(), *Standard.RoleTag.ToString());
 			ReportScoreEvent(Standard.RoleTag, WrongEquipmentErrorCode);
 		}
 	}
@@ -154,6 +175,7 @@ TArray<FName> UMultipleTask_EquipmentConfirm::GetSelectedEquipment(FName RoleTag
 		return Selected;
 	}
 
+	// 只统计 EquipmentTagPool 内的 Tag，Pawn 上的身份 Tag 等不会被当成装备
 	for (const FName& Tag : Pawn->Tags)
 	{
 		if (EquipmentTagPool.Contains(Tag))
@@ -206,6 +228,7 @@ TArray<FName> UMultipleTask_EquipmentConfirm::GetWrongEquipment(FName RoleTag) c
 				Wrong.Add(Tag);
 			}
 		}
+		// 每个身份在 StandardEquipment 里只应有一条配置，命中后即退出
 		break;
 	}
 	return Wrong;
