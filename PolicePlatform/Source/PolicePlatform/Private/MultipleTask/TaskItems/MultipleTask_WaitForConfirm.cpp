@@ -147,6 +147,13 @@ void UMultipleTask_WaitForConfirm::CheckCompletion()
 		{
 			// 优先按已注册的参训玩家判定：监看端/观战端不会被算进来
 			TArray<APlayerController*> Participants = OwnerSequencer->GetParticipants();
+			// 剔除非玩家 PC（像素流客户端等）：它们永远不会点确认，混入会让"全员确认"永远等不齐
+			Participants.RemoveAll([this](const APlayerController* PC)
+			{
+				const APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+				return Pawn && !OwnerSequencer->IsPawnValidPlayer(Pawn);
+			});
+
 			if (Participants.Num() > 0)
 			{
 				int32 Confirmed = 0;

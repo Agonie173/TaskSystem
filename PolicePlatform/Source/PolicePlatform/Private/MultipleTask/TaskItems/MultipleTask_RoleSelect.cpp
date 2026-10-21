@@ -185,6 +185,13 @@ void UMultipleTask_RoleSelect::CheckAllAssigned()
 
 	for (APlayerController* PC : Participants)
 	{
+		// 非玩家 PC（像素流客户端等）没有身份也不会去选，跳过，否则永远等不齐
+		const APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+		if (Pawn && !OwnerSequencer->IsPawnValidPlayer(Pawn))
+		{
+			continue;
+		}
+
 		if (!HasAnyRole(PC))
 		{
 			return;

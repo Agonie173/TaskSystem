@@ -9,33 +9,6 @@
 class UMultipleTaskBase;
 
 /**
- * 装备信息（配表用）：某身份的初始标准装备定义。
- * EquipmentClass 用软引用避免编辑器加载全部装备蓝图；运行时由
- * Sequencer 初始化时按 RoleTag 查表生成/发放装备 Actor。
- */
-USTRUCT(BlueprintType)
-struct FEquipmentInfo
-{
-	GENERATED_BODY()
-
-	// 装备唯一标识（日志/存档/评分报表用）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	FName EquipmentId;
-
-	// 显示名（UI 提示/装备清点列表用）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	FText DisplayName;
-
-	// 装备 Actor 类（软引用，运行时异步加载后 Spawn）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	TSoftClassPtr<AActor> EquipmentClass;
-
-	// UI 上显示该装备时使用的颜色
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	FLinearColor Color = FLinearColor::White;
-};
-
-/**
  * 一个身份 + 该身份要站的碰撞盒（多人到位 / 就位确认共用）
  */
 USTRUCT(BlueprintType)
