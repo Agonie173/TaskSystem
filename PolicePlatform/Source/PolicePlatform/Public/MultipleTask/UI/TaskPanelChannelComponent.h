@@ -17,6 +17,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTaskPanelStateChanged, const FTa
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTaskPanelActionSubmitted,
 	APlayerController*, PC, FName, PanelId, FName, ButtonId, int32, RowIndex);
 
+/** 客户端向服务器提交自定义事件（如语音识别结果等），仅服务器收到 */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnTaskCustomEventSubmitted,
+	APlayerController*, PC, FName, EventId, const FString&, Payload);
+
 /**
  * 玩家面板通道：挂在 PlayerState 上（由外层框架添加，缺少时服务器会自动创建）。
  *
@@ -94,6 +98,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
 	void SubmitPanelButton(FName ButtonId, int32 RowIndex = -1);
 
+	/**
+	 * 客户端向服务器提交自定义事件（如语音识别结果等）。
+	 * 仅客户端调用有效；服务器收到后广播 OnCustomEventSubmitted。
+	 * EventId 用于任务端识别事件类型，Payload 为文本数据。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	void SubmitCustomEvent(FName EventId, const FString& Payload);
+
 	/** 该通道所属的 PlayerController（服务器与本地客户端可用） */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskPanel")
 	APlayerController* GetOwningController() const;
@@ -108,12 +120,20 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
 	FOnTaskPanelActionSubmitted OnPanelActionSubmitted;
 
+	/** 客户端提交了自定义事件（仅服务器会广播，任务绑定） */
+	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
+	FOnTaskCustomEventSubmitted OnCustomEventSubmitted;
+
 protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	// 客户端按钮回传（Server RPC，可靠）；组件必须挂 PlayerState 才有合法 Owner 链，挂在 GameState 上会被引擎静默丢弃
 	UFUNCTION(Server, Reliable)
 	void Server_SubmitPanelButton(FName PanelId, FName ButtonId, int32 RowIndex);
+
+	// 客户端自定义事件回传（Server RPC，可靠）
+	UFUNCTION(Server, Reliable)
+	void Server_SubmitCustomEvent(FName EventId, const FString& Payload);
 
 	// 复制回调：向本地 UI 广播 OnPanelStateChanged；非专用服务器的服务器端写属性后需手动调用
 	UFUNCTION()
@@ -130,4 +150,7 @@ protected:
 private:
 	// 校验可见性/按钮 Id 后广播 OnPanelActionSubmitted（服务器本地调用与 Server RPC 落地共用）
 	void SubmitPanelButtonInternal(FName ButtonId, int32 RowIndex);
+
+	// 校验 EventId 后广播 OnCustomEventSubmitted（服务器本地调用与 Server RPC 落地共用）
+	void SubmitCustomEventInternal(FName EventId, const FString& Payload);
 };

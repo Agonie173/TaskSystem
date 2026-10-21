@@ -84,6 +84,10 @@ public:
 	// OverlapEnd 事件由 Sequencer 从关卡 TriggerVolume 转发过来
 	virtual void OnActorOverlapEnd(AActor* OverlappedActor, AActor* OtherActor);
 
+	// ==================== 自定义事件接口 ====================
+	// 客户端自定义事件（如语音识别结果）经 Sequencer 从 TaskPanelChannelComponent 转发过来
+	virtual void OnCustomEvent(APlayerController* PC, FName EventId, const FString& Payload);
+
 	// ==================== 辅助方法 ====================
 	// 根据身份Tag查找对应的Pawn（通过Sequencer）
 	// 网络语义：仅服务器有意义，依赖 Sequencer 内的身份注册表；OwnerSequencer 未注入时返回空

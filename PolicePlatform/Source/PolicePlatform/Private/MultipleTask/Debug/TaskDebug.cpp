@@ -9,7 +9,7 @@
 // FTaskDebug::RegisterConsoleCommands() 注册（幂等）。Shipping 构建下
 // 全部内容被 #if !UE_BUILD_SHIPPING 裁剪，不影响正式包。
 
-#include "Debug/TaskDebug.h"
+#include "MultipleTask/Debug/TaskDebug.h"
 
 #if !UE_BUILD_SHIPPING
 
@@ -28,8 +28,7 @@
 #include "MultipleTask/TaskItems/MultipleTask_ZoneMonitor.h"
 #include "MultipleTask/TaskItems/MultipleTask_SearchInspection.h"
 #include "MultipleTask/TaskItems/MultipleTask_NPCBehavior.h"
-#include "MultipleTask/TaskItems/MultipleTask_PlayAnim.h"
-#include "MultipleTask/TaskItems/MultipleTask_PlayAudio.h"
+#include "MultipleTask/TaskItems/MultipleTask_MediaPlayback.h"
 #include "MultipleTask/TaskItems/MultipleTask_VoiceRecognitionWait.h"
 #include "MultipleTask/TaskItems/MultipleTask_EndTraining.h"
 #include "MultipleTask/Score/ScoreComponent.h"
@@ -430,82 +429,45 @@ namespace
 				}
 			}
 		}
-		// ---------- 动画播放 ----------
-		else if (const UMultipleTask_PlayAnim* PlayAnim = Cast<UMultipleTask_PlayAnim>(Task))
-		{
-			if (PlayAnim->bNeedMultipleAnim)
+		// ---------- 媒体播放 ----------
+			else if (const UMultipleTask_MediaPlayback* Media = Cast<UMultipleTask_MediaPlayback>(Task))
 			{
-				if (PlayAnim->PlayAnimInfoArray.Num() == 0)
+				if (Media->Playlist.Num() == 0)
 				{
-					AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("需要多段动画但 PlayAnimInfoArray 为空"));
+					AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("Playlist 为空，任务会立即结束"));
 				}
-				for (int32 Index = 0; Index < PlayAnim->PlayAnimInfoArray.Num(); ++Index)
+
+				for (int32 Index = 0; Index < Media->Playlist.Num(); ++Index)
 				{
-					if (!PlayAnim->PlayAnimInfoArray[Index].PlayAnimSequence)
+					const FMediaPlaybackItem& Item = Media->Playlist[Index];
+
+					if (!Item.Sound && !Item.AnimSequence)
 					{
 						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("PlayAnimInfoArray[%d] 未配置动画"), Index));
+							FString::Printf(TEXT("Playlist[%d] 既没有音频也没有动画"), Index));
+					}
+
+					if (Item.LocationType == EMediaPlayLocationType::OnPawn
+						&& Item.TargetRoleTag.IsNone() && Item.TargetPawnRef.IsNull())
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
+							FString::Printf(TEXT("Playlist[%d] 按 Pawn 播放但既没有身份也没有 Pawn引用"), Index));
+					}
+
+					if (Item.DelayBefore < 0.f || Item.DelayAfter < 0.f)
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+							FString::Printf(TEXT("Playlist[%d] 延迟为负数"), Index));
+					}
+
+					if (Item.AnimSequence && Item.LocationType == EMediaPlayLocationType::AtLocation)
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+							FString::Printf(TEXT("Playlist[%d] 配置了动画但位置类型为 AtLocation，动画不会播放"), Index));
 					}
 				}
 			}
-			else if (!PlayAnim->PlayAnimInfo.PlayAnimSequence)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("PlayAnimInfo 未配置动画，任务会立即结束"));
-			}
-
-			if (PlayAnim->LoopCount < 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("LoopCount < 0"));
-			}
-			else if (PlayAnim->LoopCount == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Info, Loc, TEXT("LoopCount = 0 为无限循环，只能由外部结束"));
-			}
-
-			if (PlayAnim->TargetRoleTag.IsNone() && PlayAnim->TargetPawnRef.IsNull())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("既没有 TargetRoleTag 也没有 TargetPawnRef"));
-			}
-		}
-		// ---------- 音频播放 ----------
-		else if (const UMultipleTask_PlayAudio* PlayAudio = Cast<UMultipleTask_PlayAudio>(Task))
-		{
-			if (PlayAudio->PlayAudioTaskInfo.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("PlayAudioTaskInfo 为空，任务会立即结束"));
-			}
-
-			for (int32 Index = 0; Index < PlayAudio->PlayAudioTaskInfo.Num(); ++Index)
-			{
-				const FPlayAudioTaskInfo& Info = PlayAudio->PlayAudioTaskInfo[Index];
-
-				if (!Info.PlaySound)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 未配置 PlaySound"), Index));
-				}
-
-				if (Info.PlayAudioType == EAudioPlayLocationType::PlayAudioForPawn
-					&& Info.TargetRoleTag.IsNone() && Info.PlayAudioPawn.IsNull())
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 按 Pawn 播放但既没有身份也没有 Pawn引用"), Index));
-				}
-
-				if (Info.bNeedPlayAnim && !Info.PlayAudioSequence)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 需要动画但 PlayAudioSequence 为空"), Index));
-				}
-
-				if (Info.DelayBeforePlayback < 0.f || Info.DelayAfterPlayback < 0.f)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 延迟为负数"), Index));
-				}
-			}
-		}
-		// ---------- 语音识别 ----------
+			// ---------- 语音识别 ----------
 		else if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
 		{
 			// 注意：下方提示文案与实际行为相反——MultipleTask_VoiceRecognitionWait 的
@@ -529,10 +491,10 @@ namespace
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("Ratio 模式下 RequiredRatio <= 0"));
 			}
-			if (Voice->RecognitionTimeout <= 0.f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("RecognitionTimeout <= 0，可能立即超时"));
-			}
+			if (Voice->TotalDuration <= 0.f)
+				{
+					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("TotalDuration <= 0，可能立即超时"));
+				}
 		}
 		// ---------- 结束训练 ----------
 		else if (const UMultipleTask_EndTraining* EndTraining = Cast<UMultipleTask_EndTraining>(Task))

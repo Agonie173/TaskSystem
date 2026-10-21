@@ -7,53 +7,24 @@
 #include "MultipleTask_VoiceRecognitionWait.generated.h"
 
 /**
- * 语音关键词配置
- */
-USTRUCT(BlueprintType, Blueprintable)
-struct FVoiceKeyWord
-{
-	GENERATED_BODY()
-
-	// 关键词文本
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	FString Keyword;
-
-	// 本次是否必须命中
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	bool bRequired = true;
-
-	// 同义词（分号分隔，如 "驻地;管控区域"）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
-	FString Synonyms;
-};
-
-UENUM(BlueprintType)
-enum class EKeywordMatchPolicy : uint8
-{
-	All,           // 所有 RequiredKeyWords 都要命中
-	Any,           // 任意一个命中即通过
-	Ratio,         // 按比例（RequiredRatio）
-};
-
-/**
- * 等待语音识别回调任务：
- * 等待外部语音识别系统回调，校验关键词是否命中
- * 同时显示参考话术字幕
+ * 语音识别等待任务：
+ * 等待指定身份的玩家通过语音说出关键词，匹配成功则结束任务。
  *
- * 职责：被动等待外部语音识别系统在服务器上调用 ReportRecognitionResult，
- *       按关键词策略（All/Any/Ratio）校验发言文本，命中即结束；等待期间向
- *       全员展示参考话术字幕。
- * 设计原因：识别结果由外部系统异步推送，任务只做等待与校验；匹配失败靠
- *       超时 + 重试上限兜底推进，避免流程被卡死。
- * 口径（以代码为准）：本类没有任何评分错误码字段，超时或重试耗尽只是打
- *       日志后 EndTask 放行流程，不调用 ReportScoreEvent、不扣分；需要扣分
- *       时由后续任务或外层框架负责。
- * 用法：SpeakerRoleTag 指定谁发言；RequiredKeyWords 配关键词与同义词（分号
- *       分隔）；KeywordMatchPolicy 选策略；外部系统回调时 RoleTag 必须与
- *       SpeakerRoleTag 一致，否则回执被忽略。
- * 坑：仅服务器执行；RequiredKeyWords 为空时 CheckKeywordMatch 直接返回 true
- *       （任意回执都算通过）；RecognitionTimeout <= 0 时不设超时，可能无限
- *       等待；重试计数在"匹配失败"与"超时"两条路径都会累加。
+ * 工作流程：
+ * 1. 显示提示文本（字幕或UI）
+ * 2. 绑定自定义事件（CustomEventId）接收外部语音识别系统的识别结果
+ * 3. 在 TotalDuration 秒内可多次尝试，命中关键词即提前结束
+ * 4. 超时未命中：上报 TimeoutErrorCode 扣分并结束任务
+ *
+ * 与旧版差异：
+ * - 旧版：单轮超时 + 重试次数，每次识别失败重置计时器
+ * - 新版：总时长限制，期间可无限次尝试，命中即结束；超时扣分
+ *
+ * 外部语音识别系统接入方式：
+ * 客户端识别到语音后，通过 PlayerState 上的 TaskPanelChannelComponent
+ * 调用 SubmitCustomEvent(CustomEventId, RecognizedText)，服务器转发到本任务。
+ *
+ * 注意：本任务只在服务器执行，依赖外部语音识别系统提供文本回执。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_VoiceRecognitionWait : public UMultipleTaskBase
@@ -61,66 +32,56 @@ class POLICEPLATFORM_API UMultipleTask_VoiceRecognitionWait : public UMultipleTa
 	GENERATED_BODY()
 
 public:
-	/** 任务开始：重试清零、展示字幕并启动超时计时（仅服务器执行） */
 	virtual void StartTask_Implementation() override;
-	/** 任务结束：清超时计时器并隐藏字幕（幂等，外部也可直接调用） */
 	virtual void EndTask_Implementation() override;
+	virtual void OnCustomEvent(APlayerController* PC, FName EventId, const FString& Payload) override;
 
-	// ==================== 发言人配置 ====================
+	// ==================== 配置 ====================
 
-	// 谁需要说话
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Speaker")
-	FName SpeakerRoleTag = FName(TEXT("Role_1"));
+	// 发言者身份标签（只处理该身份玩家的识别结果）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
+	FName SpeakerRoleTag;
 
-	// 对讲/喊话姿态的 Montage Tag（空=不需要姿态前置，直接说话）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Speaker")
-	FName SpeakerPoseTag = NAME_None;
-
-	// ==================== 字幕与关键词 ====================
-
-	// 参考话术字幕（显示给所有玩家看）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "UI")
-	FText SubtitleText;
-
-	// 必须命中的关键词列表
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Keywords")
+	// 语音识别关键词列表（支持同义词/近义词）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
 	TArray<FVoiceKeyWord> RequiredKeyWords;
 
-	// 匹配策略
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Keywords")
+	// 总时长限制（秒），0 = 不限时一直等待
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
+	float TotalDuration = 30.0f;
+
+	// 自定义事件 ID：外部语音识别系统通过此 ID 上报识别结果
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
+	FName CustomEventId = TEXT("VoiceRecognition");
+
+	// 提示字幕文本（可选）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
+	FText SubtitleText;
+
+	// 关键词匹配策略
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
 	EKeywordMatchPolicy KeywordMatchPolicy = EKeywordMatchPolicy::All;
 
-	// Ratio 模式下的比例（0.6 = 60% 以上）
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Keywords",
-		meta = (EditCondition = "KeywordMatchPolicy == EKeywordMatchPolicy::Ratio", EditConditionHides))
-	float RequiredRatio = 0.6f;
+	// 匹配比例阈值（KeywordMatchPolicy = Ratio 时生效）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice",
+		meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "KeywordMatchPolicy == EKeywordMatchPolicy::Ratio"))
+	float RequiredRatio = 0.8f;
 
-	// ==================== 超时与重试 ====================
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Timeout")
-	float RecognitionTimeout = 30.f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Timeout")
-	int32 MaxRetryCount = 3;
-
-	// ==================== 外部语音识别回调接口 ====================
-
-	/** 语音识别结果回调（由外部语音识别系统调用） */
-	UFUNCTION(BlueprintCallable, Category = "Voice")
-	void ReportRecognitionResult(FName RoleTag, const FString& RecognizedText);
+	// 超时错误码（超时未命中时上报扣分，配表需配置对应扣分值）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Voice")
+	FName TimeoutErrorCode;
 
 private:
-	// 已消耗的重试次数（匹配失败与超时两条路径都会累加）
-	int32 RetryCount = 0;
-	// 单轮识别的超时计时器句柄（匹配失败后重开一轮时会重置）
-	FTimerHandle TimeoutTimerHandle;
-
-	// 超时回调：计入一次重试，未达上限则重开一轮等待
-	void OnTimeout();
-	// 关键词匹配校验：按 All/Any/Ratio 策略判定回执文本（列表为空直接通过）
+	// 检查识别结果是否匹配关键词
 	bool CheckKeywordMatch(const FString& Text);
-	// 显示参考话术字幕（实际 UI 呈现由外层框架/蓝图处理）
+
+	// 超时处理：扣分并结束任务
+	void OnTotalTimeout();
+
+	// 显示/隐藏提示字幕
 	void ShowSubtitle();
-	// 隐藏参考话术字幕
 	void HideSubtitle();
+
+	// 总超时计时器
+	FTimerHandle TimeoutTimerHandle;
 };

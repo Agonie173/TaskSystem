@@ -244,7 +244,12 @@ bool UTaskSequencerComponent::RegisterParticipant(APlayerController* PC)
 		*PC->GetName(), Participants.Num());
 
 	// 提前创建面板通道：保证客户端 UI 在第一个面板到达前就能绑定事件
-	UTaskPanelChannelComponent::FindOrCreateChannel(PC);
+	if (UTaskPanelChannelComponent* Channel = UTaskPanelChannelComponent::FindOrCreateChannel(PC))
+	{
+		// 绑定自定义事件转发：客户端语音识别等结果经通道上报后路由到当前活跃任务
+		Channel->OnCustomEventSubmitted.RemoveDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
+		Channel->OnCustomEventSubmitted.AddDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
+	}
 	return true;
 }
 
@@ -500,6 +505,26 @@ void UTaskSequencerComponent::ForwardOverlapEnd(AActor* OverlappedActor, AActor*
 		if (Task && !Task->bTaskEnded)
 		{
 			Task->OnActorOverlapEnd(OverlappedActor, OtherActor);
+		}
+	}
+}
+
+void UTaskSequencerComponent::ForwardCustomEvent(APlayerController* PC, FName EventId, const FString& Payload)
+{
+	if (!HasAuthorityForTask() || EventId.IsNone())
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] CustomEvent forwarded: PC=%s event=%s payload len=%d"),
+		*GetNameSafe(PC), *EventId.ToString(), Payload.Len());
+
+	TArray<TObjectPtr<UMultipleTaskBase>> Snapshot = ActiveTasks;
+	for (UMultipleTaskBase* Task : Snapshot)
+	{
+		if (Task && !Task->bTaskEnded)
+		{
+			Task->OnCustomEvent(PC, EventId, Payload);
 		}
 	}
 }

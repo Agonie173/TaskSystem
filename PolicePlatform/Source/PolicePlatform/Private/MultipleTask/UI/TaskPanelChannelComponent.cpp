@@ -139,6 +139,29 @@ void UTaskPanelChannelComponent::SubmitPanelButton(FName ButtonId, int32 RowInde
 	SubmitPanelButtonInternal(ButtonId, RowIndex);
 }
 
+void UTaskPanelChannelComponent::SubmitCustomEvent(FName EventId, const FString& Payload)
+{
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		// 只有本地玩家自己的通道才能向服务器提交
+		APlayerController* PC = GetOwningController();
+		if (PC && PC->IsLocalController())
+		{
+			UE_LOG(LogTemp, Log, TEXT("[TaskPanelChannel] Client submits custom event '%s' (payload len=%d)"),
+				*EventId.ToString(), Payload.Len());
+			Server_SubmitCustomEvent(EventId, Payload);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("[TaskPanelChannel] Non-local controller custom event ignored (owner %s)"), *GetNameSafe(GetOwner()));
+		}
+		return;
+	}
+
+	// 服务器本地直接广播
+	SubmitCustomEventInternal(EventId, Payload);
+}
+
 APlayerController* UTaskPanelChannelComponent::GetOwningController() const
 {
 	if (const APlayerState* PS = Cast<APlayerState>(GetOwner()))
@@ -161,6 +184,33 @@ void UTaskPanelChannelComponent::Server_SubmitPanelButton_Implementation(FName P
 	}
 
 	SubmitPanelButtonInternal(ButtonId, RowIndex);
+}
+
+void UTaskPanelChannelComponent::Server_SubmitCustomEvent_Implementation(FName EventId, const FString& Payload)
+{
+	SubmitCustomEventInternal(EventId, Payload);
+}
+
+void UTaskPanelChannelComponent::SubmitCustomEventInternal(FName EventId, const FString& Payload)
+{
+	if (EventId.IsNone())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TaskPanelChannel] Custom event rejected: EventId is None (owner %s)"), *GetNameSafe(GetOwner()));
+		return;
+	}
+
+	APlayerController* PC = GetOwningController();
+	if (!PC)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TaskPanelChannel] Custom event rejected: no owning PlayerController (owner %s)"),
+			*GetNameSafe(GetOwner()));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[TaskPanelChannel] Custom event accepted: event '%s', PC %s, payload len=%d"),
+		*EventId.ToString(), *GetNameSafe(PC), Payload.Len());
+
+	OnCustomEventSubmitted.Broadcast(PC, EventId, Payload);
 }
 
 void UTaskPanelChannelComponent::SubmitPanelButtonInternal(FName ButtonId, int32 RowIndex)

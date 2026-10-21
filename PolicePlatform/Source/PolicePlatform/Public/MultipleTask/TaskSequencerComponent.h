@@ -172,6 +172,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TaskSequencer|Events")
 	void ForwardOverlapEnd(AActor* OverlappedActor, AActor* OtherActor);
 
+	/** 客户端自定义事件（如语音识别结果）经 TaskPanelChannelComponent 转发到当前活跃任务 */
+	UFUNCTION(BlueprintCallable, Category = "TaskSequencer|Events")
+	void ForwardCustomEvent(APlayerController* PC, FName EventId, const FString& Payload);
+
 	// ==================== 辅助查询接口（TaskItem 调用） ====================
 
 	/**
