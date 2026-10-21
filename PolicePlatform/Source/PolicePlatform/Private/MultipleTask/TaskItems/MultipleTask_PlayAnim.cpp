@@ -2,13 +2,18 @@
 
 #include "MultipleTask/TaskItems/MultipleTask_PlayAnim.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimMontage.h"
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
 void UMultipleTask_PlayAnim::StartTask_Implementation()
 {
+	Super::StartTask_Implementation();
+
+	CachedTargetPawn = nullptr;
 	if (!TargetRoleTag.IsNone())
 	{
 		CachedTargetPawn = FindPawnByRoleTag(TargetRoleTag);
@@ -39,6 +44,46 @@ void UMultipleTask_PlayAnim::StartTask_Implementation()
 	}
 }
 
+void UMultipleTask_PlayAnim::EndTask_Implementation()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(AnimTimerHandle);
+	}
+	Super::EndTask_Implementation();
+}
+
+bool UMultipleTask_PlayAnim::PlayAnimOnTarget(UAnimSequenceBase* AnimToPlay)
+{
+	if (!CachedTargetPawn || !AnimToPlay)
+	{
+		return false;
+	}
+
+	USkeletalMeshComponent* SkelMesh =
+		CachedTargetPawn->FindComponentByClass<USkeletalMeshComponent>();
+	if (!SkelMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] %s has no SkeletalMeshComponent"), *CachedTargetPawn->GetName());
+		return false;
+	}
+
+	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimToPlay))
+	{
+		SkelMesh->PlayAnimation(Seq, false);
+		return true;
+	}
+
+	if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimToPlay))
+	{
+		SkelMesh->PlayAnimation(Montage, false);
+		return true;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] Unsupported animation type: %s"), *AnimToPlay->GetClass()->GetName());
+	return false;
+}
+
 void UMultipleTask_PlayAnim::PlayNextAnim()
 {
 	if (!CachedTargetPawn)
@@ -59,46 +104,25 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 
 	if (!AnimToPlay)
 	{
-		CurrentLoopCount++;
-		if (LoopCount > 0 && CurrentLoopCount >= LoopCount)
-		{
-			EndTask();
-		}
-		else
-		{
-			CurrentAnimIndex = 0;
-			PlayNextAnim();
-		}
+		// 没有可播动画时不能靠递归重试：LoopCount=0 会变成无限同步递归直接爆栈
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] No animation at index %d, task ending"), CurrentAnimIndex);
+		EndTask();
 		return;
 	}
 
-	USkeletalMeshComponent* SkelMesh = Cast<USkeletalMeshComponent>(
-		CachedTargetPawn->FindComponentByClass<USkeletalMeshComponent>());
-	if (!SkelMesh)
+	if (!PlayAnimOnTarget(AnimToPlay))
 	{
-		OnSingleAnimEnd();
+		// 目标上播不了动画时直接结束，避免循环重试（LoopCount=0 会无限同步递归）
+		EndTask();
 		return;
 	}
 
-	// 播放动画
-	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimToPlay))
-	{
-		SkelMesh->PlayAnimation(Seq, false);
-	}
-	else if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimToPlay))
-	{
-		SkelMesh->PlayAnimation(Montage, false);
-	}
-
-	// UE 5.3 UAnimInstance 没有 OnAnimationEnded 委托
-	// 用 Timer 等待动画时长
 	UWorld* World = GetWorld();
 	if (World)
 	{
-		float Duration = AnimToPlay->GetPlayLength();
-		FTimerHandle DummyHandle;
-		World->GetTimerManager().SetTimer(DummyHandle, this, &UMultipleTask_PlayAnim::OnSingleAnimEnd,
-			Duration, false);
+		const float Duration = FMath::Max(AnimToPlay->GetPlayLength(), 0.01f);
+		World->GetTimerManager().SetTimer(AnimTimerHandle, this,
+			&UMultipleTask_PlayAnim::OnSingleAnimEnd, Duration, false);
 	}
 	else
 	{

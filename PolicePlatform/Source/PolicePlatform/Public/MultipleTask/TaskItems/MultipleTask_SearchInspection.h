@@ -8,13 +8,6 @@
 
 class USoundBase;
 
-UENUM(BlueprintType)
-enum class ESearchInteractionType : uint8
-{
-	Overlap,    // 用碰撞盒重叠触发（优先推荐）
-	Approach,   // 靠近到一定距离触发（Tick 距离检测）
-};
-
 USTRUCT(BlueprintType, Blueprintable)
 struct FBodyPartConfig
 {
@@ -55,9 +48,6 @@ public:
 	FName TargetActorTag = FName(TEXT("Suspect"));
 
 	// ==================== 交互与部位 ====================
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Interaction")
-	ESearchInteractionType InteractionType = ESearchInteractionType::Overlap;
 
 	// 哪些身份可以执行搜身（空=所有人都可以）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Interaction")

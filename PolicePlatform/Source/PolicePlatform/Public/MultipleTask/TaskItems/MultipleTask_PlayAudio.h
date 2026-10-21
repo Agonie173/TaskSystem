@@ -7,6 +7,9 @@
 #include "MultipleTask_PlayAudio.generated.h"
 
 class APawn;
+class UAnimSequence;
+class USoundBase;
+class UAudioComponent;
 
 UENUM(BlueprintType)
 enum class EAudioPlayLocationType : uint8
@@ -86,6 +89,9 @@ private:
 	// 当前正在使用的 AudioComponent（防止 GC）
 	UPROPERTY()
 	TObjectPtr<UAudioComponent> CurrentAudioComponent;
+
+	/** 播放前/后延时定时器（成员持有，避免任务结束后回调野指针） */
+	FTimerHandle DelayTimerHandle;
 
 	void StartPlayAudio();
 	void PlayAnim(APawn* Pawn, UAnimSequence* PlayAudioSequence);

@@ -7,10 +7,12 @@
 #include "MultipleTaskBase.generated.h"
 
 class UTaskSequencerComponent;
+class UMultipleTaskBase;
 class APawn;
 class AActor;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTaskEnd);
+// 任务结束时广播，携带自身，避免 Sequencer 无法区分是哪个任务结束
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTaskEnd, UMultipleTaskBase*, EndedTask);
 
 /**
  * Abstract                      指定此类为抽象基类。可被继承，但不可生成对象。
@@ -49,6 +51,10 @@ public:
 	UPROPERTY()
 	TObjectPtr<UTaskSequencerComponent> OwnerSequencer;
 
+	// 是否已经结束过（防止重复广播导致 Sequencer 重复计数）
+	UPROPERTY(BlueprintReadOnly, Category = "MultipleTask")
+	bool bTaskEnded = false;
+
 	// ==================== 碰撞盒驱动接口 ====================
 	// OverlapBegin 事件由 Sequencer 从关卡 TriggerVolume 转发过来
 	virtual void OnActorOverlapBegin(AActor* OverlappedActor, AActor* OtherActor);
@@ -59,6 +65,13 @@ public:
 	// 根据身份Tag查找对应的Pawn（通过Sequencer）
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "MultipleTask")
 	APawn* FindPawnByRoleTag(FName RoleTag) const;
+
+	/**
+	 * 上报一次评分事件（服务器权威）。
+	 * 任务只给「谁 + 错误码」，扣分值由配表 FScoreRule 决定。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MultipleTask|Score")
+	void ReportScoreEvent(FName RoleTag, FName ErrorCode);
 
 protected:
 	// 根据Tag查找关卡中的Actor（通过Sequencer）
