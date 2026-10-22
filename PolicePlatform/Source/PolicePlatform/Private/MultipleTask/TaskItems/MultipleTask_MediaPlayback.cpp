@@ -226,7 +226,11 @@ APawn* UMultipleTask_MediaPlayback::ResolveTargetPawn(const FMediaPlaybackItem& 
 	// 优先按 TargetRoleTag 查找
 	if (!Item.TargetRoleTag.IsNone() && OwnerSequencer)
 	{
+<<<<<<< HEAD
 		APawn* Pawn = OwnerSequencer->GetPawnByRoleTag(Item.TargetRoleTag);
+=======
+		APawn* Pawn = OwnerSequencer->FindPawnByRoleTag(Item.TargetRoleTag);
+>>>>>>> 8b9600870b9f94d6838e29841ac984c982b05739
 		if (Pawn)
 		{
 			return Pawn;

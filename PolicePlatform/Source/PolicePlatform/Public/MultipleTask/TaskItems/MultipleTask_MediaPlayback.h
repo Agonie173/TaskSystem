@@ -148,9 +148,12 @@ private:
 	// 播放下一条
 	void PlayNext();
 
+<<<<<<< HEAD
 	// 推进到下一条（清理当前 + 递增索引 + 播放）
 	void AdvanceToNext();
 
+=======
+>>>>>>> 8b9600870b9f94d6838e29841ac984c982b05739
 	// 音频播放完成回调
 	UFUNCTION()
 	void OnAudioFinished();
