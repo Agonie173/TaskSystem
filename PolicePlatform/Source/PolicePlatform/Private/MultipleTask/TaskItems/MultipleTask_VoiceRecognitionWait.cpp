@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MultipleTask/TaskItems/MultipleTask_VoiceRecognitionWait.h"
+#include "MultipleTask/TaskSequencerComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
 
 void UMultipleTask_VoiceRecognitionWait::StartTask_Implementation()
 {
-	RetryCount = 0;
-
-	// 显示字幕
-	ShowSubtitle();
+	Super::StartTask_Implementation();
 
 	// 配置告警：关键词列表为空时任意回执都会被判为匹配成功
 	if (RequiredKeyWords.IsEmpty())
@@ -18,96 +17,88 @@ void UMultipleTask_VoiceRecognitionWait::StartTask_Implementation()
 		UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] RequiredKeyWords is empty, any recognition result will pass"));
 	}
 
-	// 启动超时计时器（RecognitionTimeout <= 0 时不设超时，可能一直等待回执）
-	if (RecognitionTimeout > 0.f)
+	if (CustomEventId.IsNone())
 	{
-		UWorld* World = GetWorld();
-		if (World)
+		UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] CustomEventId is None, task will never receive recognition results"));
+	}
+
+	// 显示字幕
+	ShowSubtitle();
+
+	// 启动总超时计时器（TotalDuration <= 0 时不设超时，可能一直等待）
+	if (TotalDuration > 0.f)
+	{
+		if (UWorld* World = GetWorld())
 		{
-			World->GetTimerManager().SetTimer(TimeoutTimerHandle, this, &UMultipleTask_VoiceRecognitionWait::OnTimeout,
-				RecognitionTimeout, false);
+			World->GetTimerManager().SetTimer(TimeoutTimerHandle, this, &UMultipleTask_VoiceRecognitionWait::OnTotalTimeout,
+				TotalDuration, false);
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Waiting for role %s to speak (retry %d/%d)"),
-		*SpeakerRoleTag.ToString(), RetryCount, MaxRetryCount);
+	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Waiting for role %s to speak (duration=%.1fs, event=%s)"),
+		*SpeakerRoleTag.ToString(), TotalDuration, *CustomEventId.ToString());
 }
 
 void UMultipleTask_VoiceRecognitionWait::EndTask_Implementation()
 {
-	UWorld* World = GetWorld();
-	if (World)
+	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(TimeoutTimerHandle);
 	}
 	HideSubtitle();
-	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Task ended after %d retry(ies)"), RetryCount);
 	Super::EndTask_Implementation();
 }
 
-void UMultipleTask_VoiceRecognitionWait::ReportRecognitionResult(FName RoleTag, const FString& RecognizedText)
+void UMultipleTask_VoiceRecognitionWait::OnCustomEvent(APlayerController* PC, FName EventId, const FString& Payload)
 {
-	// 验证发言人身份
-	if (RoleTag != SpeakerRoleTag)
+	// 只处理匹配的自定义事件
+	if (EventId != CustomEventId)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] Recognition from wrong role %s (expected %s)"),
-			*RoleTag.ToString(), *SpeakerRoleTag.ToString());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Recognition result: \"%s\""), *RecognizedText);
-
-	if (CheckKeywordMatch(RecognizedText))
+	// 验证发言人身份：通过 Sequencer 查找该玩家的身份标签
+	if (!SpeakerRoleTag.IsNone() && OwnerSequencer)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] All required keywords matched!"));
+		const FName PlayerRole = OwnerSequencer->GetRoleTagByPawn(PC ? PC->GetPawn() : nullptr);
+		if (PlayerRole != SpeakerRoleTag)
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("[VoiceRecognition] Ignored recognition from wrong role %s (expected %s)"),
+				*PlayerRole.ToString(), *SpeakerRoleTag.ToString());
+			return;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Recognition result: \"%s\""), *Payload);
+
+	if (CheckKeywordMatch(Payload))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Keywords matched, ending task"));
 		EndTask();
 	}
 	else
 	{
-		// 关键词不全，重试
-		RetryCount++;
-		if (RetryCount >= MaxRetryCount)
+		float RemainingTime = -1.f;
+		if (TotalDuration > 0.f && GetWorld())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] Max retries exceeded (%d), task ending with failure"),
-				MaxRetryCount);
-			EndTask();
+			RemainingTime = FMath::Max(0.f, TotalDuration - GetWorld()->GetTimerManager().GetTimerElapsed(TimeoutTimerHandle));
 		}
-		else
-		{
-			UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Keyword match incomplete, retry %d/%d"), RetryCount, MaxRetryCount);
-			// 重置超时计时器
-			UWorld* World = GetWorld();
-			if (World)
-			{
-				World->GetTimerManager().ClearTimer(TimeoutTimerHandle);
-				World->GetTimerManager().SetTimer(TimeoutTimerHandle, this, &UMultipleTask_VoiceRecognitionWait::OnTimeout,
-					RecognitionTimeout, false);
-			}
-		}
+		UE_LOG(LogTemp, Verbose, TEXT("[VoiceRecognition] Keywords not matched, continue waiting (remaining time=%.1fs)"),
+			RemainingTime);
 	}
 }
 
-void UMultipleTask_VoiceRecognitionWait::OnTimeout()
+void UMultipleTask_VoiceRecognitionWait::OnTotalTimeout()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] Timeout, retry %d/%d"), RetryCount, MaxRetryCount);
-	RetryCount++;
+	UE_LOG(LogTemp, Warning, TEXT("[VoiceRecognition] Total timeout (%.1fs), task ending with failure"), TotalDuration);
 
-	if (RetryCount >= MaxRetryCount)
+	// 上报扣分
+	if (!TimeoutErrorCode.IsNone() && OwnerSequencer)
 	{
-		// 超时路径的重试耗尽：无错误码字段，仅放行流程结束任务（不扣分）
-		UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Retry limit reached after timeout, task ending"));
-		EndTask();
+		ReportScoreEvent(SpeakerRoleTag, TimeoutErrorCode);
 	}
-	else
-	{
-		// 重新设置超时
-		UWorld* World = GetWorld();
-		if (World)
-		{
-			World->GetTimerManager().SetTimer(TimeoutTimerHandle, this, &UMultipleTask_VoiceRecognitionWait::OnTimeout,
-				RecognitionTimeout, false);
-		}
-	}
+
+	EndTask();
 }
 
 bool UMultipleTask_VoiceRecognitionWait::CheckKeywordMatch(const FString& Text)
@@ -160,7 +151,7 @@ bool UMultipleTask_VoiceRecognitionWait::CheckKeywordMatch(const FString& Text)
 		}
 	}
 
-	// 调试日志：匹配统计，便于排查识别质量问题（每次回执只打一条）
+	// 调试日志：匹配统计，便于排查识别质量问题
 	UE_LOG(LogTemp, Verbose, TEXT("[VoiceRecognition] Match stats: matched %d/%d, required matched %d/%d, policy %d, ratio %.2f"),
 		MatchedCount, RequiredKeyWords.Num(), RequiredMatchedCount, RequiredCount,
 		static_cast<int32>(KeywordMatchPolicy), RequiredRatio);
@@ -184,7 +175,7 @@ bool UMultipleTask_VoiceRecognitionWait::CheckKeywordMatch(const FString& Text)
 
 void UMultipleTask_VoiceRecognitionWait::ShowSubtitle()
 {
-	if (!SubtitleText.ToString().IsEmpty())
+	if (!SubtitleText.IsEmpty())
 	{
 		UE_LOG(LogTemp, Log, TEXT("[VoiceRecognition] Subtitle shown: %s"), *SubtitleText.ToString());
 		// 实际显示字幕的逻辑由蓝图/外部 UI 系统处理

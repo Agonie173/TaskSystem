@@ -36,6 +36,10 @@ void UMultipleTaskBase::OnActorOverlapEnd(AActor* OverlappedActor, AActor* Other
 {
 }
 
+void UMultipleTaskBase::OnCustomEvent(APlayerController* PC, FName EventId, const FString& Payload)
+{
+}
+
 APawn* UMultipleTaskBase::FindPawnByRoleTag(FName RoleTag) const
 {
 	if (OwnerSequencer)

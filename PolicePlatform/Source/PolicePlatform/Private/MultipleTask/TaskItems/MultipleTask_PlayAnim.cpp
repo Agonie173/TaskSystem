@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MultipleTask/TaskItems/MultipleTask_PlayAnim.h"
+#include "MultipleTask/TaskSequencerComponent.h"
+#include "MultipleTask/TaskAudioBroadcaster.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
@@ -31,18 +33,12 @@ void UMultipleTask_PlayAnim::StartTask_Implementation()
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Target pawn: %s"), *CachedTargetPawn->GetName());
-
 	CurrentAnimIndex = 0;
 	CurrentLoopCount = 0;
-
+	PlayNextAnim();
 	if (!bWaitAnimEnd)
 	{
-		PlayNextAnim();
 		EndTask();
-	}
-	else
-	{
-		PlayNextAnim();
 	}
 }
 
@@ -62,31 +58,29 @@ bool UMultipleTask_PlayAnim::PlayAnimOnTarget(UAnimSequenceBase* AnimToPlay)
 		return false;
 	}
 
-	USkeletalMeshComponent* SkelMesh =
-		CachedTargetPawn->FindComponentByClass<USkeletalMeshComponent>();
-	if (!SkelMesh)
+	if (!AnimToPlay->IsA<UAnimSequence>() && !AnimToPlay->IsA<UAnimMontage>())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] %s has no SkeletalMeshComponent"), *CachedTargetPawn->GetName());
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] Unsupported animation type: %s"), *AnimToPlay->GetClass()->GetName());
 		return false;
 	}
 
-	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimToPlay))
+	// 播放统一由广播通道驱动（Slot 蒙太奇，服务器本地 + 客户端重建，自动混合回蓝图）
+	if (OwnerSequencer && OwnerSequencer->GetAudioBroadcaster())
 	{
-		SkelMesh->PlayAnimation(Seq, false);
-		UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Playing sequence %s on %s"),
-			*Seq->GetName(), *CachedTargetPawn->GetName());
+		OwnerSequencer->GetAudioBroadcaster()->BroadcastPlayAnim(CachedTargetPawn, AnimToPlay);
+		UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Playing %s on %s"),
+			*AnimToPlay->GetName(), *CachedTargetPawn->GetName());
 		return true;
 	}
 
-	if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimToPlay))
+	// 通道缺失兜底：本地裸播放（无混合，仅单机调试）
+	if (USkeletalMeshComponent* SkelMesh = CachedTargetPawn->FindComponentByClass<USkeletalMeshComponent>())
 	{
-		SkelMesh->PlayAnimation(Montage, false);
-		UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Playing montage %s on %s"),
-			*Montage->GetName(), *CachedTargetPawn->GetName());
+		SkelMesh->PlayAnimation(AnimToPlay, false);
 		return true;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] Unsupported animation type: %s"), *AnimToPlay->GetClass()->GetName());
+	UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] %s has no SkeletalMeshComponent"), *CachedTargetPawn->GetName());
 	return false;
 }
 
@@ -110,7 +104,7 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 
 	if (!AnimToPlay)
 	{
-		// 没有可播动画时不能靠递归重试：LoopCount=0 会变成无限同步递归直接爆栈
+		// 不能靠递归重试：LoopCount=0 会变成无限同步递归直接爆栈
 		UE_LOG(LogTemp, Warning, TEXT("[PlayAnim] No animation at index %d, task ending"), CurrentAnimIndex);
 		EndTask();
 		return;
@@ -118,7 +112,7 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 
 	if (!PlayAnimOnTarget(AnimToPlay))
 	{
-		// 目标上播不了动画时直接结束，避免循环重试（LoopCount=0 会无限同步递归）
+		// 播不了直接结束，避免循环重试（原因同上）
 		EndTask();
 		return;
 	}
@@ -127,7 +121,6 @@ void UMultipleTask_PlayAnim::PlayNextAnim()
 	if (World)
 	{
 		const float Duration = FMath::Max(AnimToPlay->GetPlayLength(), 0.01f);
-		UE_LOG(LogTemp, Verbose, TEXT("[PlayAnim] Wait %.2fs for anim end (index %d)"), Duration, CurrentAnimIndex);
 		World->GetTimerManager().SetTimer(AnimTimerHandle, this,
 			&UMultipleTask_PlayAnim::OnSingleAnimEnd, Duration, false);
 	}
@@ -141,14 +134,7 @@ void UMultipleTask_PlayAnim::OnSingleAnimEnd()
 {
 	CurrentAnimIndex++;
 
-	UE_LOG(LogTemp, Log, TEXT("[PlayAnim] Segment ended (next index %d, loop %d, loop count %d)"),
-		CurrentAnimIndex, CurrentLoopCount, LoopCount);
-
-	bool bHasMoreAnims = false;
-	if (bNeedMultipleAnim)
-	{
-		bHasMoreAnims = PlayAnimInfoArray.IsValidIndex(CurrentAnimIndex);
-	}
+	bool bHasMoreAnims = bNeedMultipleAnim && PlayAnimInfoArray.IsValidIndex(CurrentAnimIndex);
 
 	if (bHasMoreAnims)
 	{

@@ -1,4 +1,4 @@
-﻿// 任务系统调试工具（仅非 Shipping 编译）
+// 任务系统调试工具（仅非 Shipping 编译）
 //
 // 本文件是所有 Task.* 调试控制台命令的注册入口与实现：
 //   Task.Help / Task.Dump / Task.Validate [AssetPath] / Task.Skip <N> /
@@ -9,7 +9,7 @@
 // FTaskDebug::RegisterConsoleCommands() 注册（幂等）。Shipping 构建下
 // 全部内容被 #if !UE_BUILD_SHIPPING 裁剪，不影响正式包。
 
-#include "Debug/TaskDebug.h"
+#include "MultipleTask/Debug/TaskDebug.h"
 
 #if !UE_BUILD_SHIPPING
 
@@ -18,6 +18,9 @@
 #include "MultipleTask/TaskItems/MultipleTaskBase.h"
 #include "MultipleTask/TaskItems/MultipleTask_UIPanelDisplay.h"
 #include "MultipleTask/TaskItems/MultipleTask_WidgetDisplay.h"
+#include "MultipleTask/TaskItems/MultipleTask_SpawnActor_OnServer.h"
+#include "MultipleTask/TaskItems/MultipleTask_SpawnActor_OnClient.h"
+#include "MultipleTask/TaskItems/MultipleTask_EditActorTag.h"
 #include "MultipleTask/TaskItems/MultipleTask_WaitForConfirm.h"
 #include "MultipleTask/TaskItems/MultipleTask_RoleSelect.h"
 #include "MultipleTask/TaskItems/MultipleTask_MultiStationArrival.h"
@@ -25,11 +28,11 @@
 #include "MultipleTask/TaskItems/MultipleTask_GuideToLocation.h"
 #include "MultipleTask/TaskItems/MultipleTask_EquipmentInteract.h"
 #include "MultipleTask/TaskItems/MultipleTask_EquipmentConfirm.h"
+#include "MultipleTask/TaskItems/MultipleTask_EquipmentAudit.h"
 #include "MultipleTask/TaskItems/MultipleTask_ZoneMonitor.h"
 #include "MultipleTask/TaskItems/MultipleTask_SearchInspection.h"
 #include "MultipleTask/TaskItems/MultipleTask_NPCBehavior.h"
-#include "MultipleTask/TaskItems/MultipleTask_PlayAnim.h"
-#include "MultipleTask/TaskItems/MultipleTask_PlayAudio.h"
+#include "MultipleTask/TaskItems/MultipleTask_MediaPlayback.h"
 #include "MultipleTask/TaskItems/MultipleTask_VoiceRecognitionWait.h"
 #include "MultipleTask/TaskItems/MultipleTask_EndTraining.h"
 #include "MultipleTask/Score/ScoreComponent.h"
@@ -44,6 +47,7 @@
 #include "EngineUtils.h"
 #include "DrawDebugHelpers.h"
 #include "HAL/IConsoleManager.h"
+#include "Blueprint/UserWidget.h"
 
 // ==================== cvar ====================
 
@@ -286,16 +290,38 @@ namespace
 		{
 			if (EquipConfirm->StandardEquipment.Num() == 0)
 			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("StandardEquipment 为空，无法核对装备"));
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("StandardEquipment 为空，无法确定需要等哪些身份确认，任务可能立即结束"));
 			}
 			if (EquipConfirm->EquipmentTagPool.Num() == 0)
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("EquipmentTagPool 为空，面板将不显示任何装备"));
+			}
+			if (EquipConfirm->ConfirmButtonText.IsEmpty())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("ConfirmButtonText 为空，不会生成确认按钮"));
+			}
+			if (EquipConfirm->EquipmentLockedTag.IsNone())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("EquipmentLockedTag 为空，装备不会被锁定"));
+			}
+		}
+		// ---------- 装备核对 ----------
+		else if (const UMultipleTask_EquipmentAudit* EquipAudit = Cast<UMultipleTask_EquipmentAudit>(Task))
+		{
+			if (EquipAudit->StandardEquipment.Num() == 0)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("StandardEquipment 为空，无法核对装备"));
+			}
+			if (EquipAudit->EquipmentTagPool.Num() == 0)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
 					TEXT("EquipmentTagPool 为空，可能把身份等非装备 Tag 误判为装备"));
 			}
-			for (int32 Index = 0; Index < EquipConfirm->StandardEquipment.Num(); ++Index)
+			for (int32 Index = 0; Index < EquipAudit->StandardEquipment.Num(); ++Index)
 			{
-				if (EquipConfirm->StandardEquipment[Index].RequiredTags.Num() == 0)
+				if (EquipAudit->StandardEquipment[Index].RequiredTags.Num() == 0)
 				{
 					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
 						FString::Printf(TEXT("StandardEquipment[%d] 的 RequiredTags 为空"), Index));
@@ -430,82 +456,45 @@ namespace
 				}
 			}
 		}
-		// ---------- 动画播放 ----------
-		else if (const UMultipleTask_PlayAnim* PlayAnim = Cast<UMultipleTask_PlayAnim>(Task))
-		{
-			if (PlayAnim->bNeedMultipleAnim)
+		// ---------- 媒体播放 ----------
+			else if (const UMultipleTask_MediaPlayback* Media = Cast<UMultipleTask_MediaPlayback>(Task))
 			{
-				if (PlayAnim->PlayAnimInfoArray.Num() == 0)
+				if (Media->Playlist.Num() == 0)
 				{
-					AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("需要多段动画但 PlayAnimInfoArray 为空"));
+					AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("Playlist 为空，任务会立即结束"));
 				}
-				for (int32 Index = 0; Index < PlayAnim->PlayAnimInfoArray.Num(); ++Index)
+
+				for (int32 Index = 0; Index < Media->Playlist.Num(); ++Index)
 				{
-					if (!PlayAnim->PlayAnimInfoArray[Index].PlayAnimSequence)
+					const FMediaPlaybackItem& Item = Media->Playlist[Index];
+
+					if (!Item.Sound && !Item.AnimSequence)
 					{
 						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("PlayAnimInfoArray[%d] 未配置动画"), Index));
+							FString::Printf(TEXT("Playlist[%d] 既没有音频也没有动画"), Index));
+					}
+
+					if (Item.LocationType == EMediaPlayLocationType::OnPawn
+						&& Item.TargetRoleTag.IsNone() && Item.TargetPawnRef.IsNull())
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
+							FString::Printf(TEXT("Playlist[%d] 按 Pawn 播放但既没有身份也没有 Pawn引用"), Index));
+					}
+
+					if (Item.DelayBefore < 0.f || Item.DelayAfter < 0.f)
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+							FString::Printf(TEXT("Playlist[%d] 延迟为负数"), Index));
+					}
+
+					if (Item.AnimSequence && Item.LocationType == EMediaPlayLocationType::AtLocation)
+					{
+						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+							FString::Printf(TEXT("Playlist[%d] 配置了动画但位置类型为 AtLocation，动画不会播放"), Index));
 					}
 				}
 			}
-			else if (!PlayAnim->PlayAnimInfo.PlayAnimSequence)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("PlayAnimInfo 未配置动画，任务会立即结束"));
-			}
-
-			if (PlayAnim->LoopCount < 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("LoopCount < 0"));
-			}
-			else if (PlayAnim->LoopCount == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Info, Loc, TEXT("LoopCount = 0 为无限循环，只能由外部结束"));
-			}
-
-			if (PlayAnim->TargetRoleTag.IsNone() && PlayAnim->TargetPawnRef.IsNull())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("既没有 TargetRoleTag 也没有 TargetPawnRef"));
-			}
-		}
-		// ---------- 音频播放 ----------
-		else if (const UMultipleTask_PlayAudio* PlayAudio = Cast<UMultipleTask_PlayAudio>(Task))
-		{
-			if (PlayAudio->PlayAudioTaskInfo.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("PlayAudioTaskInfo 为空，任务会立即结束"));
-			}
-
-			for (int32 Index = 0; Index < PlayAudio->PlayAudioTaskInfo.Num(); ++Index)
-			{
-				const FPlayAudioTaskInfo& Info = PlayAudio->PlayAudioTaskInfo[Index];
-
-				if (!Info.PlaySound)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 未配置 PlaySound"), Index));
-				}
-
-				if (Info.PlayAudioType == EAudioPlayLocationType::PlayAudioForPawn
-					&& Info.TargetRoleTag.IsNone() && Info.PlayAudioPawn.IsNull())
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 按 Pawn 播放但既没有身份也没有 Pawn引用"), Index));
-				}
-
-				if (Info.bNeedPlayAnim && !Info.PlayAudioSequence)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 需要动画但 PlayAudioSequence 为空"), Index));
-				}
-
-				if (Info.DelayBeforePlayback < 0.f || Info.DelayAfterPlayback < 0.f)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("PlayAudioTaskInfo[%d] 延迟为负数"), Index));
-				}
-			}
-		}
-		// ---------- 语音识别 ----------
+			// ---------- 语音识别 ----------
 		else if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
 		{
 			// 注意：下方提示文案与实际行为相反——MultipleTask_VoiceRecognitionWait 的
@@ -529,10 +518,10 @@ namespace
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("Ratio 模式下 RequiredRatio <= 0"));
 			}
-			if (Voice->RecognitionTimeout <= 0.f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("RecognitionTimeout <= 0，可能立即超时"));
-			}
+			if (Voice->TotalDuration <= 0.f)
+				{
+					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("TotalDuration <= 0，可能立即超时"));
+				}
 		}
 		// ---------- 结束训练 ----------
 		else if (const UMultipleTask_EndTraining* EndTraining = Cast<UMultipleTask_EndTraining>(Task))
@@ -565,6 +554,46 @@ namespace
 					TEXT("bDrawAtDesiredSize = false 但 DrawSize 存在非正值，Widget 可能无法显示"));
 			}
 		}
+		else if (const UMultipleTask_SpawnActor_OnServer* SpawnTask = Cast<UMultipleTask_SpawnActor_OnServer>(Task))
+		{
+			if (SpawnTask->ActorClass == nullptr)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("ActorClass 为空，不会生成任何 Actor"));
+			}
+			if (SpawnTask->SpawnTransform.GetScale3D().IsNearlyZero())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("SpawnTransform 缩放接近零，生成物可能不可见"));
+			}
+		}
+		else if (const UMultipleTask_SpawnActor_OnClient* SpawnClientTask = Cast<UMultipleTask_SpawnActor_OnClient>(Task))
+		{
+			if (SpawnClientTask->ActorClass == nullptr)
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("ActorClass 为空，不会生成任何 Actor"));
+			}
+			if (SpawnClientTask->TargetFilterTag.IsNone())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("TargetFilterTag 为空，所有合法玩家（VRPlayer/PCPlayer）的客户端都会生成"));
+			}
+			if (SpawnClientTask->SpawnTransform.GetScale3D().IsNearlyZero())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
+					TEXT("SpawnTransform 缩放接近零，生成物可能不可见"));
+			}
+		}
+		else if (const UMultipleTask_EditActorTag* TagTask = Cast<UMultipleTask_EditActorTag>(Task))
+		{
+			if (TagTask->FindTag.IsNone())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("FindTag 为空，找不到任何目标 Actor"));
+			}
+			if (TagTask->TagToModify.IsNone())
+			{
+				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("TagToModify 为空，不会修改任何标签"));
+			}
+		}
 
 		// ---------- 错误码 → 评分规则 ----------
 		TArray<FName> ErrorCodes;
@@ -572,10 +601,14 @@ namespace
 		{
 			ErrorCodes.Add(Zone->ViolationErrorCode);
 		}
-		if (const UMultipleTask_EquipmentConfirm* EquipConfirm = Cast<UMultipleTask_EquipmentConfirm>(Task))
+		if (const UMultipleTask_EquipmentAudit* EquipAudit = Cast<UMultipleTask_EquipmentAudit>(Task))
 		{
-			ErrorCodes.Add(EquipConfirm->MissingEquipmentErrorCode);
-			ErrorCodes.Add(EquipConfirm->WrongEquipmentErrorCode);
+			ErrorCodes.Add(EquipAudit->MissingEquipmentErrorCode);
+			ErrorCodes.Add(EquipAudit->WrongEquipmentErrorCode);
+		}
+		if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
+		{
+			ErrorCodes.Add(Voice->TimeoutErrorCode);
 		}
 
 		for (FName Code : ErrorCodes)

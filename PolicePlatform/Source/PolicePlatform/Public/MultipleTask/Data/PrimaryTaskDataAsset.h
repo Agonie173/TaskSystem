@@ -86,6 +86,11 @@ struct FTaskStep
 		meta = (ShowOnlyInnerProperties))
 	TArray<TObjectPtr<UMultipleTaskBase>> ParallelTasks;
 
+	// 本步骤开始前整体延迟（秒），步骤内所有任务到点后统一启动。
+	// 0 = 立即开始；用于步骤之间留白（如上个动作完成停顿几秒再进入下一步）
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (ClampMin = "0.0"))
+	float DelayBeforeStart = 0.f;
+
 	// 本步骤涉及的评分规则（错误码 → 扣分值）
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (ShowOnlyInnerProperties))
 	TArray<FScoreRule> ScoreRules;
@@ -115,6 +120,12 @@ public:
 	// 任务名（日志/调试/任务列表显示用）
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Task")
 	FName TaskName;
+
+	// 任务开始所需的最少玩家数（含 Listen Server 的 host，DS 即远程客户端总数）。
+	// 0 = 不主动要求人数（仍会等首个玩家进场）；多人局设为期望总人数，
+	// 避免任务在部分玩家连接完成前启动——复制通道未建立时音频/动画/面板广播会被静默丢弃
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Task", meta = (ClampMin = "0"))
+	int32 MinPlayersToStart = 0;
 
 	// 所有步骤，顺序执行；每个 Step 内的 ParallelTasks 并行执行
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Steps",

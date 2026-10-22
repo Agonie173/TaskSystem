@@ -73,6 +73,17 @@ void UMultipleTask_EquipmentConfirm::HandlePanelAction_Implementation(APlayerCon
 	UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] %s confirmed equipment: %s"),
 		*RoleTag.ToString(), *JoinTags(GetSelectedEquipment(RoleTag)));
 
+	// 锁定装备：给 Pawn 贴锁定标签，装备系统可检查此标签禁止再换装
+	if (!EquipmentLockedTag.IsNone())
+	{
+		if (APawn* Pawn = PC->GetPawn())
+		{
+			Pawn->Tags.AddUnique(EquipmentLockedTag);
+			UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] %s equipment locked (tag: %s)"),
+				*RoleTag.ToString(), *EquipmentLockedTag.ToString());
+		}
+	}
+
 	// 刷新全员面板，显示谁已确认
 	PushPanelToAudience();
 
@@ -96,7 +107,8 @@ void UMultipleTask_EquipmentConfirm::HandlePanelAction_Implementation(APlayerCon
 
 	if (AreAllRolesConfirmed())
 	{
-		EvaluateAndFinish();
+		UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] All present roles confirmed, ending task"));
+		EndTask();
 	}
 }
 
@@ -126,43 +138,6 @@ bool UMultipleTask_EquipmentConfirm::AreAllRolesConfirmed() const
 	return PresentRoleCount > 0;
 }
 
-void UMultipleTask_EquipmentConfirm::EvaluateAndFinish()
-{
-	for (const FRoleEquipmentTags& Standard : StandardEquipment)
-	{
-		// 缺席身份不做“少拿/多拿”判定，避免给不存在的角色记分
-		if (!IsRolePresent(Standard.RoleTag))
-		{
-			continue;
-		}
-
-		const TArray<FName> Missing = GetMissingEquipment(Standard.RoleTag);
-		const TArray<FName> Wrong = GetWrongEquipment(Standard.RoleTag);
-
-		UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] %s selected [%s], missing [%s], wrong [%s]"),
-			*Standard.RoleTag.ToString(),
-			*JoinTags(GetSelectedEquipment(Standard.RoleTag)),
-			*JoinTags(Missing),
-			*JoinTags(Wrong));
-
-		if (Missing.Num() > 0)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] Report missing-equipment error '%s' for role %s"),
-				*MissingEquipmentErrorCode.ToString(), *Standard.RoleTag.ToString());
-			ReportScoreEvent(Standard.RoleTag, MissingEquipmentErrorCode);
-		}
-		if (Wrong.Num() > 0)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] Report wrong-equipment error '%s' for role %s"),
-				*WrongEquipmentErrorCode.ToString(), *Standard.RoleTag.ToString());
-			ReportScoreEvent(Standard.RoleTag, WrongEquipmentErrorCode);
-		}
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("[EquipmentConfirm] All roles confirmed, task ending"));
-	EndTask();
-}
-
 // ==================== 查询 ====================
 
 TArray<FName> UMultipleTask_EquipmentConfirm::GetSelectedEquipment(FName RoleTag) const
@@ -184,54 +159,6 @@ TArray<FName> UMultipleTask_EquipmentConfirm::GetSelectedEquipment(FName RoleTag
 		}
 	}
 	return Selected;
-}
-
-TArray<FName> UMultipleTask_EquipmentConfirm::GetMissingEquipment(FName RoleTag) const
-{
-	TArray<FName> Missing;
-
-	const TArray<FName> Selected = GetSelectedEquipment(RoleTag);
-	for (const FRoleEquipmentTags& Standard : StandardEquipment)
-	{
-		if (Standard.RoleTag != RoleTag)
-		{
-			continue;
-		}
-
-		for (const FName& Tag : Standard.RequiredTags)
-		{
-			if (!Tag.IsNone() && !Selected.Contains(Tag))
-			{
-				Missing.Add(Tag);
-			}
-		}
-	}
-	return Missing;
-}
-
-TArray<FName> UMultipleTask_EquipmentConfirm::GetWrongEquipment(FName RoleTag) const
-{
-	TArray<FName> Wrong;
-
-	const TArray<FName> Selected = GetSelectedEquipment(RoleTag);
-	for (const FRoleEquipmentTags& Standard : StandardEquipment)
-	{
-		if (Standard.RoleTag != RoleTag)
-		{
-			continue;
-		}
-
-		for (const FName& Tag : Selected)
-		{
-			if (!Standard.RequiredTags.Contains(Tag))
-			{
-				Wrong.Add(Tag);
-			}
-		}
-		// 每个身份在 StandardEquipment 里只应有一条配置，命中后即退出
-		break;
-	}
-	return Wrong;
 }
 
 bool UMultipleTask_EquipmentConfirm::IsRoleConfirmed(FName RoleTag) const

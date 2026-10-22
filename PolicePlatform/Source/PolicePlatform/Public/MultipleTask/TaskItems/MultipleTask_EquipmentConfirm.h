@@ -8,22 +8,17 @@
 #include "MultipleTask_EquipmentConfirm.generated.h"
 
 /**
- * 自主选择并领取装备任务（05 步）：
+ * 自主选择并领取装备确认任务：
  * 面板显示每名玩家当前已领取的装备（只统计 EquipmentTagPool 里的 Tag），
- * 三人分别点击【确认装备并继续】后，按 StandardEquipment 核对：
- * 少拿记 MissingEquipmentErrorCode，错拿/多拿记 WrongEquipmentErrorCode，
- * 每名玩家各记一次，不回退、不要求重选。
- *
- * 装备统一调整为标准装备由外层框架在步骤结束后完成，本任务不操作物品。
+ * 三人分别点击【确认装备并继续】后，给各自 Pawn 贴上 EquipmentLockedTag 锁定装备，
+ * 全员确认后任务结束。核对扣分由独立的 EquipmentAudit 任务执行。
  *
  * 职责：展示各身份当前已领取的装备（按 EquipmentTagPool 过滤 Pawn Tag），
- *       收齐在座身份的确认回执后按 StandardEquipment 核对并上报评分事件。
- * 设计原因：领取动作由装备柜交互完成，本任务只读 Pawn Tag 做事后核对，不
- *       操作物品；确认制可避免玩家还没选完就被流程推进。
- * 用法：StandardEquipment 既是核对基准，也决定需要等哪些身份确认；缺席身份
- *       自动跳过（不参与确认也不评分），防止流程卡死。
- * 坑：仅服务器执行；EquipmentTagPool 为空时任何装备都识别不到，全员都会被判
- *       "少拿"；少拿/多拿各记一次分，记完不回退、不要求重选。
+ *       收齐在座身份的确认回执后给各自 Pawn 贴锁定标签，然后结束任务。
+ * 设计原因：确认与核对分离——确认任务只负责"等确认+锁定"，核对任务只负责"检查+扣分"，
+ *       复用性更好。确认后锁定可防止玩家在核对前换装导致核对结果不准。
+ * 用法：StandardEquipment 决定需要等哪些身份确认；缺席身份自动跳过（不参与确认）。
+ * 坑：仅服务器执行；确认后 Pawn 会被贴上 EquipmentLockedTag，装备系统可检查此标签禁止再换装。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_EquipmentConfirm : public UMultipleTask_PanelBase
@@ -37,12 +32,12 @@ public:
 	virtual void StartTask_Implementation() override;
 	/** 组装面板数据：每个身份一行（当前装备 + 确认状态），并追加确认按钮 */
 	virtual FTaskPanelData BuildPanelData() const override;
-	/** 处理确认按钮回执：按 PlayerController 反查身份，去重记录并刷新面板，全员确认则核对结束 */
+	/** 处理确认按钮回执：按 PlayerController 反查身份，去重记录、贴锁定标签并刷新面板，全员确认则结束 */
 	virtual void HandlePanelAction_Implementation(APlayerController* PC, FName ButtonId, int32 RowIndex) override;
 
 	// ==================== 配表 ====================
 
-	/** 标准装备配置（核对基准，同时决定需要哪些身份确认） */
+	/** 标准装备配置（决定需要等哪些身份确认） */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
 	TArray<FRoleEquipmentTags> StandardEquipment;
 
@@ -53,18 +48,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
 	TArray<FName> EquipmentTagPool;
 
-	/** 错误码：少拿装备 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
-	FName MissingEquipmentErrorCode = FName(TEXT("EquipmentMissing"));
-
-	/** 错误码：拿错或多拿装备 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
-	FName WrongEquipmentErrorCode = FName(TEXT("EquipmentWrong"));
-
 	// ==================== 面板 ====================
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	FName ConfirmButtonId = FName(TEXT("Confirm"));
+
+	/** 确认后贴到 Pawn 上的锁定标签（装备系统可检查此标签禁止再换装） */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Equipment")
+	FName EquipmentLockedTag = TEXT("EquipmentLocked");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Panel")
 	FText ConfirmButtonText;
@@ -75,14 +66,6 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
 	TArray<FName> GetSelectedEquipment(FName RoleTag) const;
 
-	/** 某身份相对标准配置缺少的装备 */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
-	TArray<FName> GetMissingEquipment(FName RoleTag) const;
-
-	/** 某身份相对标准配置多拿/拿错的装备 */
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
-	TArray<FName> GetWrongEquipment(FName RoleTag) const;
-
 	/** 某身份是否已确认 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Equipment")
 	bool IsRoleConfirmed(FName RoleTag) const;
@@ -92,12 +75,9 @@ private:
 	UPROPERTY()
 	TArray<FName> ConfirmedRoles;
 
-	/** 该身份是否有玩家在场（缺席身份不参与确认与评分） */
+	/** 该身份是否有玩家在场（缺席身份不参与确认） */
 	bool IsRolePresent(FName RoleTag) const;
 
 	// 在座身份是否全部已确认（缺席身份自动豁免）
 	bool AreAllRolesConfirmed() const;
-
-	/** 核对并上报错误，然后结束 */
-	void EvaluateAndFinish();
 };

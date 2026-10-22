@@ -20,7 +20,7 @@
 
 #if !UE_BUILD_SHIPPING
 
-class UWorld;
+//class UWorld;
 class UTaskSequencerComponent;
 class UPrimaryTaskDataAsset;
 

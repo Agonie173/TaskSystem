@@ -7,6 +7,7 @@
 #include "MultipleTask_PlayAudio.generated.h"
 
 class APawn;
+class ATaskAudioBroadcaster;
 class UAnimSequence;
 class USoundBase;
 class UAudioComponent;
@@ -68,21 +69,9 @@ struct FPlayAudioTaskInfo
 };
 
 /**
- * 音频播放任务：在指定位置或 Pawn 上播放音频，可关联动画。
- *
- * 结构：PlayAudioTaskInfo 是一个按顺序播放的"清单"，每条配置支持播放前/后延时；
- * 上一条播完（OnAudioFinished 回调驱动，而非固定时长定时器）才推进下一条，
- * 全部播完后任务结束。
- *
- * PlayAudioForPawn：在目标 Pawn 身上找 UAudioComponent，没有就动态 NewObject 一个
- * （命名 AutoAudioComp）挂到 Pawn 根组件下再注册，随后 SetSound + Play；
- * 目标解析优先 TargetRoleTag（经 Sequencer 角色分配表），其次 PlayAudioPawn 直接引用；
- * 可选同时播一段动画（bNeedPlayAnim）。
- * PlayAudioForLocation：用 SpawnSoundAtLocation 在固定位置生成临时音频组件（bAutoDestroy）。
- *
- * 坑（网络语义）：播放只在服务器触发。虽然动态 AudioComponent 调用了
- * SetIsReplicated(true)，但组件复制并不会让客户端"响起声音"——音频播放本身
- * 没有 RPC/属性同步驱动，DS 下客户端听不到（已知限制），仅服务器本地可闻。
+ * 音频播放任务：按清单顺序逐条播放（OnAudioFinished 驱动，条目支持前后延时），全部播完结束。
+ * 服务器 AudioComponent 仅驱动任务流；声音与说话动画经广播通道 Multicast 到客户端重建，
+ * EndTask 凭句柄广播停止客户端音频。音频属瞬态表现，中途加入不补播。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_PlayAudio : public UMultipleTaskBase
@@ -90,9 +79,7 @@ class POLICEPLATFORM_API UMultipleTask_PlayAudio : public UMultipleTaskBase
 	GENERATED_BODY()
 
 public:
-	/** 任务开始：从头开始逐条播放音频清单（仅服务器） */
 	virtual void StartTask_Implementation() override;
-	/** 任务结束：清理延时定时器、解绑并停止当前音频组件 */
 	virtual void EndTask_Implementation() override;
 
 	// 播放清单（按顺序逐条播放）
@@ -103,35 +90,33 @@ private:
 	// 播放序号
 	int32 PlayID = 0;
 
+	// 最近一次广播播放的句柄（EndTask 时凭此广播停止客户端音频）
+	int32 LastAudioHandle = INDEX_NONE;
+
 	// 当前正在使用的 AudioComponent（防止 GC）
 	UPROPERTY()
 	TObjectPtr<UAudioComponent> CurrentAudioComponent;
 
-	/** 播放前/后延时定时器（成员持有，避免任务结束后回调野指针） */
+	// 条目播放前/后延时定时器（EndTask 统一清理）
 	FTimerHandle DelayTimerHandle;
 
-	/** 开始播放当前条目（含播放前延时的调度） */
+	// 取广播通道（OwnerSequencer 为空时返回 null）
+	ATaskAudioBroadcaster* GetBroadcaster() const;
+	// 切换委托绑定的音频组件（复用已有组件时防重复绑定）
+	void BindAudioFinished(UAudioComponent* AudioComp);
+	// 播放当前条目：按播放前延时调度或直接开始
 	void StartPlayAudio();
-
-	/** 在 Pawn 的骨骼网格上播放音频配套动画（无骨骼组件时静默跳过） */
-	void PlayAnim(APawn* Pawn, UAnimSequence* PlayAudioSequence);
-
-	/** 在目标 Pawn 身上播放（查找/动态创建 AudioComponent），播完走 AudioFinished */
+	// 当前条目真正开始播放（按 PlayAudioType 分派）
+	void PlayCurrentItem();
+	// 在目标 Pawn 身上播放（查找或动态创建 AudioComponent）
 	void PlayAudioForPawn();
-
-	/** 在世界固定位置播放（SpawnSoundAtLocation 临时组件，自动销毁） */
+	// 在世界固定位置播放（临时组件，自动销毁）
 	void PlayAudioForLocation();
-
+	// 经广播通道在目标 Pawn 上播放说话动画（Slot 蒙太奇，自动混合回蓝图）
+	void PlayAnim(APawn* Pawn, UAnimSequence* PlayAudioSequence);
 	// 找到目标Pawn（优先 TargetRoleTag，其次 PlayAudioPawn）
 	APawn* ResolveTargetPawn() const;
-
-	/** 单条音频播完回调：清理引用并推进播放清单（含播放后延时） */
+	// 单条音频播完：清理引用并推进清单（含播放后延时）
 	UFUNCTION()
 	void AudioFinished();
-
-	// 延迟回调
-	// 播放前延时到期：真正开始播放
-	void OnDelayBeforePlayback();
-	// 播放后延时到期：开始下一条
-	void OnDelayAfterPlayback();
 };

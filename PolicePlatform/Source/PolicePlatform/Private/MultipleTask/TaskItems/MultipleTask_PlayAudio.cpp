@@ -1,13 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MultipleTask/TaskItems/MultipleTask_PlayAudio.h"
+#include "MultipleTask/TaskSequencerComponent.h"
+#include "MultipleTask/TaskAudioBroadcaster.h"
 #include "Components/AudioComponent.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Animation/AnimSequence.h"
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
-#include "Engine/World.h"
 #include "TimerManager.h"
+
+ATaskAudioBroadcaster* UMultipleTask_PlayAudio::GetBroadcaster() const
+{
+	return OwnerSequencer ? OwnerSequencer->GetAudioBroadcaster() : nullptr;
+}
+
+void UMultipleTask_PlayAudio::BindAudioFinished(UAudioComponent* AudioComp)
+{
+	if (IsValid(CurrentAudioComponent))
+	{
+		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
+	}
+	CurrentAudioComponent = AudioComp;
+	// 复用已有组件时防重复绑定
+	if (AudioComp)
+	{
+		AudioComp->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
+		AudioComp->OnAudioFinished.AddDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
+	}
+}
 
 APawn* UMultipleTask_PlayAudio::ResolveTargetPawn() const
 {
@@ -15,17 +34,8 @@ APawn* UMultipleTask_PlayAudio::ResolveTargetPawn() const
 	{
 		return nullptr;
 	}
-
 	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
-
-	// 优先按 RoleTag 查玩家
-	if (!Info.TargetRoleTag.IsNone())
-	{
-		return FindPawnByRoleTag(Info.TargetRoleTag);
-	}
-
-	// 否则直接引用
-	return Info.PlayAudioPawn.Get();
+	return !Info.TargetRoleTag.IsNone() ? FindPawnByRoleTag(Info.TargetRoleTag) : Info.PlayAudioPawn.Get();
 }
 
 void UMultipleTask_PlayAudio::StartTask_Implementation()
@@ -33,16 +43,13 @@ void UMultipleTask_PlayAudio::StartTask_Implementation()
 	Super::StartTask_Implementation();
 
 	PlayID = 0;
-	if (!PlayAudioTaskInfo.IsEmpty())
-	{
-		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Task started, %d audio item(s)"), PlayAudioTaskInfo.Num());
-		StartPlayAudio();
-	}
-	else
+	if (PlayAudioTaskInfo.IsEmpty())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] PlayAudioTaskInfo is empty, task ends immediately"));
 		EndTask();
+		return;
 	}
+	StartPlayAudio();
 }
 
 void UMultipleTask_PlayAudio::EndTask_Implementation()
@@ -51,7 +58,6 @@ void UMultipleTask_PlayAudio::EndTask_Implementation()
 	{
 		World->GetTimerManager().ClearTimer(DelayTimerHandle);
 	}
-
 	if (IsValid(CurrentAudioComponent))
 	{
 		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
@@ -59,6 +65,15 @@ void UMultipleTask_PlayAudio::EndTask_Implementation()
 	}
 	CurrentAudioComponent = nullptr;
 
+	// 凭句柄广播停止客户端侧音频（步骤提前结束时客户端声音随之静音）
+	if (LastAudioHandle != INDEX_NONE)
+	{
+		if (ATaskAudioBroadcaster* Broadcaster = GetBroadcaster())
+		{
+			Broadcaster->BroadcastStopAudio(LastAudioHandle);
+		}
+		LastAudioHandle = INDEX_NONE;
+	}
 	Super::EndTask_Implementation();
 }
 
@@ -70,45 +85,96 @@ void UMultipleTask_PlayAudio::StartPlayAudio()
 		return;
 	}
 
-	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
-
-	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Starting item %d/%d, delay before %.2fs"),
-		PlayID + 1, PlayAudioTaskInfo.Num(), Info.DelayBeforePlayback);
-
-	// 处理播放前延迟
-	if (Info.DelayBeforePlayback > 0.f)
+	// 播放前延时（EndTask 会清掉本定时器，回调无需再判任务状态）
+	const float DelayBefore = PlayAudioTaskInfo[PlayID].DelayBeforePlayback;
+	if (DelayBefore > 0.f)
 	{
-		UWorld* World = GetWorld();
-		if (World)
-		{
-			World->GetTimerManager().SetTimer(DelayTimerHandle, this,
-				&UMultipleTask_PlayAudio::OnDelayBeforePlayback, Info.DelayBeforePlayback, false);
-			return;
-		}
+		GetWorld()->GetTimerManager().SetTimer(DelayTimerHandle, this,
+			&UMultipleTask_PlayAudio::PlayCurrentItem, DelayBefore, false);
+		return;
 	}
-
-	// 直接开始播放
-	OnDelayBeforePlayback();
+	PlayCurrentItem();
 }
 
-void UMultipleTask_PlayAudio::OnDelayBeforePlayback()
+void UMultipleTask_PlayAudio::PlayCurrentItem()
 {
-	if (bTaskEnded || !PlayAudioTaskInfo.IsValidIndex(PlayID))
+	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
+	if (!Info.PlaySound)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] Item %d has no sound, skipped"), PlayID);
+		AudioFinished();
 		return;
 	}
 
-	switch (PlayAudioTaskInfo[PlayID].PlayAudioType)
+	switch (Info.PlayAudioType)
 	{
-	case EAudioPlayLocationType::PlayAudioForLocation:
-		PlayAudioForLocation();
-		break;
 	case EAudioPlayLocationType::PlayAudioForPawn:
 		PlayAudioForPawn();
 		break;
+	case EAudioPlayLocationType::PlayAudioForLocation:
 	default:
-		EndTask();
+		PlayAudioForLocation();
 		break;
+	}
+}
+
+void UMultipleTask_PlayAudio::PlayAudioForPawn()
+{
+	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
+	APawn* TargetPawn = ResolveTargetPawn();
+	if (!TargetPawn)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] Target pawn not found for item %d, skipped"), PlayID);
+		AudioFinished();
+		return;
+	}
+
+	// 查找或动态创建 AudioComponent
+	UAudioComponent* AudioComp = TargetPawn->FindComponentByClass<UAudioComponent>();
+	if (!AudioComp)
+	{
+		AudioComp = NewObject<UAudioComponent>(TargetPawn, TEXT("AutoAudioComp"));
+		AudioComp->SetupAttachment(TargetPawn->GetRootComponent());
+		AudioComp->RegisterComponent();
+	}
+	BindAudioFinished(AudioComp);
+	AudioComp->SetSound(Info.PlaySound);
+	AudioComp->Play();
+
+	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing %s on %s (item %d, duration %.2fs)"),
+		*Info.PlaySound->GetName(), *TargetPawn->GetName(), PlayID, Info.PlaySound->GetDuration());
+
+	if (ATaskAudioBroadcaster* Broadcaster = GetBroadcaster())
+	{
+		LastAudioHandle = Broadcaster->BroadcastPlayAudio(Info.PlaySound, TargetPawn, FVector::ZeroVector,
+			1.f, 1.f, Info.bNeedPlayAnim, Info.PlayAudioSequence);
+	}
+	if (Info.bNeedPlayAnim)
+	{
+		PlayAnim(TargetPawn, Info.PlayAudioSequence);
+	}
+}
+
+void UMultipleTask_PlayAudio::PlayAudioForLocation()
+{
+	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
+	UAudioComponent* SpawnedAudio = UGameplayStatics::SpawnSoundAtLocation(
+		GetWorld(), Info.PlaySound, Info.PlayAudioLocation, FRotator::ZeroRotator);
+	if (!SpawnedAudio)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] SpawnSoundAtLocation failed for item %d, skipped"), PlayID);
+		AudioFinished();
+		return;
+	}
+	BindAudioFinished(SpawnedAudio);
+
+	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing %s at %s (item %d, duration %.2fs)"),
+		*Info.PlaySound->GetName(), *Info.PlayAudioLocation.ToCompactString(), PlayID, Info.PlaySound->GetDuration());
+
+	if (ATaskAudioBroadcaster* Broadcaster = GetBroadcaster())
+	{
+		LastAudioHandle = Broadcaster->BroadcastPlayAudio(Info.PlaySound, nullptr, Info.PlayAudioLocation,
+			1.f, 1.f, false, nullptr);
 	}
 }
 
@@ -118,155 +184,40 @@ void UMultipleTask_PlayAudio::PlayAnim(APawn* Pawn, UAnimSequence* PlayAudioSequ
 	{
 		return;
 	}
-
-	USkeletalMeshComponent* SkelMesh = Cast<USkeletalMeshComponent>(
-		Pawn->FindComponentByClass<USkeletalMeshComponent>());
-	if (SkelMesh)
+	// 播放统一由广播通道驱动（Slot 蒙太奇，服务器本地 + 客户端重建，自动混合回蓝图）
+	if (ATaskAudioBroadcaster* Broadcaster = GetBroadcaster())
 	{
-		SkelMesh->PlayAnimation(PlayAudioSequence, false);
-	}
-}
-
-void UMultipleTask_PlayAudio::PlayAudioForPawn()
-{
-	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
-	APawn* TargetPawn = ResolveTargetPawn();
-
-	if (!Info.PlaySound)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] PlaySound is null for PlayID=%d, skipped"), PlayID);
-		AudioFinished();
-		return;
-	}
-
-	if (!TargetPawn)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] TargetPawn not found for PlayID=%d"), PlayID);
-		AudioFinished();
-		return;
-	}
-
-	// 查找或创建 AudioComponent
-	UAudioComponent* AudioComp = TargetPawn->FindComponentByClass<UAudioComponent>();
-	if (!AudioComp)
-	{
-		// 新建一个 AudioComponent 并注册到 Pawn
-		AudioComp = NewObject<UAudioComponent>(TargetPawn, TEXT("AutoAudioComp"));
-		if (AudioComp)
-		{
-			AudioComp->SetupAttachment(TargetPawn->GetRootComponent());
-			AudioComp->SetIsReplicated(true);
-			AudioComp->RegisterComponent();
-		}
-	}
-
-	if (AudioComp)
-	{
-		CurrentAudioComponent = AudioComp;
-		AudioComp->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
-		AudioComp->OnAudioFinished.AddDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
-		AudioComp->SetSound(Info.PlaySound);
-		AudioComp->Play();
-
-		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing sound %s on pawn %s (duration %.2fs, PlayID=%d)"),
-			*Info.PlaySound->GetName(), *TargetPawn->GetName(), Info.PlaySound->GetDuration(), PlayID);
-
-		if (Info.bNeedPlayAnim)
-		{
-			PlayAnim(TargetPawn, Info.PlayAudioSequence);
-		}
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("[PlayAudio] Failed to create AudioComponent on %s"), *TargetPawn->GetName());
-		AudioFinished();
-	}
-}
-
-void UMultipleTask_PlayAudio::PlayAudioForLocation()
-{
-	const FPlayAudioTaskInfo& Info = PlayAudioTaskInfo[PlayID];
-
-	UWorld* World = GetWorld();
-	if (!World || !Info.PlaySound)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] PlayAudioForLocation skipped (world %d, sound %d, PlayID=%d)"),
-			World != nullptr, Info.PlaySound != nullptr, PlayID);
-		AudioFinished();
-		return;
-	}
-
-	// 用 SpawnSoundAtLocation 生成“挂在 World 上”的音频组件：
-	// NewObject<UAudioComponent>(this) 的 Outer 是 UObject，组件无法正确注册到世界。
-	UAudioComponent* SpawnedAudio = UGameplayStatics::SpawnSoundAtLocation(
-		World, Info.PlaySound, Info.PlayAudioLocation, FRotator::ZeroRotator,
-		1.f, 1.f, 0.f, nullptr, nullptr, /*bAutoDestroy=*/true);
-
-	if (SpawnedAudio)
-	{
-		CurrentAudioComponent = SpawnedAudio;
-		SpawnedAudio->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
-		SpawnedAudio->OnAudioFinished.AddDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
-
-		UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Playing sound %s at %s (duration %.2fs, PlayID=%d)"),
-			*Info.PlaySound->GetName(), *Info.PlayAudioLocation.ToCompactString(),
-			Info.PlaySound->GetDuration(), PlayID);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[PlayAudio] SpawnSoundAtLocation failed for sound %s"),
-			*Info.PlaySound->GetName());
-		AudioFinished();
+		Broadcaster->BroadcastPlayAnim(Pawn, PlayAudioSequence);
 	}
 }
 
 void UMultipleTask_PlayAudio::AudioFinished()
 {
+	// EndTask 先解绑再 Stop，能到达此处的只有任务结束后的残留回调
 	if (bTaskEnded)
 	{
 		return;
 	}
 
-	// 清理旧的 AudioComponent 引用
-	if (IsValid(CurrentAudioComponent))
-	{
-		CurrentAudioComponent->OnAudioFinished.RemoveDynamic(this, &UMultipleTask_PlayAudio::AudioFinished);
-	}
-	CurrentAudioComponent = nullptr;
+	BindAudioFinished(nullptr);
 
-	// 播放后延迟属于「刚刚播完的这一条」，必须在 PlayID++ 之前读取
+	// 播放后延时属于「刚播完的这一条」，须在 PlayID++ 之前读取
 	const float DelayAfter = PlayAudioTaskInfo.IsValidIndex(PlayID)
 		? PlayAudioTaskInfo[PlayID].DelayAfterPlayback
 		: 0.f;
 
-	UE_LOG(LogTemp, Log, TEXT("[PlayAudio] Item %d finished (delay after %.2fs)"), PlayID, DelayAfter);
-
 	PlayID++;
-	if (PlayAudioTaskInfo.IsValidIndex(PlayID))
-	{
-		// 处理播放后延迟
-		if (DelayAfter > 0.f)
-		{
-			UWorld* World = GetWorld();
-			if (World)
-			{
-				World->GetTimerManager().SetTimer(DelayTimerHandle, this,
-					&UMultipleTask_PlayAudio::OnDelayAfterPlayback, DelayAfter, false);
-				return;
-			}
-		}
-		StartPlayAudio();
-	}
-	else
+	if (!PlayAudioTaskInfo.IsValidIndex(PlayID))
 	{
 		EndTask();
+		return;
 	}
-}
 
-void UMultipleTask_PlayAudio::OnDelayAfterPlayback()
-{
-	if (bTaskEnded)
+	// 播放后延时到期后走 StartPlayAudio（会再处理下一条的播放前延时）
+	if (DelayAfter > 0.f)
 	{
+		GetWorld()->GetTimerManager().SetTimer(DelayTimerHandle, this,
+			&UMultipleTask_PlayAudio::StartPlayAudio, DelayAfter, false);
 		return;
 	}
 	StartPlayAudio();

@@ -22,18 +22,10 @@ struct FMultipleTaskPlayAnimInfo
 
 /**
  * 动画播放任务：在指定 Pawn/NPC 上播放单个或多个动画，播完或延时后结束任务。
- *
- * 目标解析：优先按 TargetRoleTag（经 Sequencer 的角色分配表）查 Pawn，
- * 否则用 TargetPawnRef 直接引用（适合 NPC）；目标在 StartTask 时解析并缓存到
- * CachedTargetPawn，任务期间不重复查找。
- *
- * 播放实现：直接在目标骨骼网格组件上 PlayAnimation（AnimSequence / AnimMontage 均可），
- * 结束时机 = 动画播放时长定时器（GetPlayLength），不支持动画结束通知的精确回调；
- * 多动画按数组顺序接续播放，LoopCount 控制整组循环次数（0 = 无限循环）。
- * bWaitAnimEnd = false 时动画照常触发但任务立即结束（不等播完）。
- *
- * 坑（网络语义）：播放只在服务器逻辑里发生，动画状态没有任何同步驱动，
- * DS 下客户端看不到该动画（已知限制）；仅适合服务器本地演示或单机场景。
+ * 目标解析：优先 TargetRoleTag（角色分配表），否则 TargetPawnRef（NPC）；StartTask 时解析并缓存。
+ * 多动画按数组顺序接续，LoopCount 控制整组循环（0 = 无限）；bWaitAnimEnd = false 时动画照常
+ * 触发但任务立即结束。任务流由 GetPlayLength 定时器推进；播放本身统一走广播通道的 Slot 蒙太奇
+ * （原生 BlendIn/BlendOut 自动混合回动画蓝图），中途加入不补播。
  */
 UCLASS(CollapseCategories)
 class POLICEPLATFORM_API UMultipleTask_PlayAnim : public UMultipleTaskBase
@@ -95,7 +87,6 @@ private:
 
 	/** 在目标 Pawn 上播放一段动画，返回是否成功播放 */
 	bool PlayAnimOnTarget(UAnimSequenceBase* AnimToPlay);
-
 	/** 单段动画时长到期回调：推进序列或循环轮次 */
 	UFUNCTION()
 	void OnSingleAnimEnd();

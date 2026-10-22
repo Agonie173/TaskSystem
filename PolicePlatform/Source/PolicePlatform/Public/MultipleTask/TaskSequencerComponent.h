@@ -9,6 +9,7 @@
 
 class UMultipleTaskBase;
 class UPrimaryTaskDataAsset;
+class ATaskAudioBroadcaster;
 class APawn;
 class AActor;
 class APlayerController;
@@ -49,6 +50,9 @@ class POLICEPLATFORM_API UTaskSequencerComponent : public UActorComponent
 
 public:
 	UTaskSequencerComponent();
+
+	/** 预生成音频广播通道（仅服务器）：动态复制 Actor 必须早于玩家进场存在，否则首次 Multicast 会被丢弃 */
+	virtual void BeginPlay() override;
 
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
@@ -172,6 +176,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TaskSequencer|Events")
 	void ForwardOverlapEnd(AActor* OverlappedActor, AActor* OtherActor);
 
+	/** 客户端自定义事件（如语音识别结果）经 TaskPanelChannelComponent 转发到当前活跃任务 */
+	UFUNCTION(BlueprintCallable, Category = "TaskSequencer|Events")
+	void ForwardCustomEvent(APlayerController* PC, FName EventId, const FString& Payload);
+
 	// ==================== 辅助查询接口（TaskItem 调用） ====================
 
 	/**
@@ -195,6 +203,13 @@ public:
 	/** 根据 Pawn 反查身份 Tag（服务器侧；未分配身份返回 None） */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "TaskSequencer|Utility")
 	FName GetRoleTagByPawn(APawn* Pawn) const;
+
+	/**
+	 * 获取音频广播通道（懒生成，仅服务器会生成，客户端返回 nullptr）。
+	 * 供任务把表现类效果（音频播放/停止、说话动画）广播到全客户端使用：
+	 * 服务器侧任务流（OnAudioFinished 驱动）保持本地不变，声音经通道 Multicast 到客户端重建。
+	 */
+	ATaskAudioBroadcaster* GetAudioBroadcaster();
 
 	// ==================== 调试接口（仅供 TaskDebug 只读访问） ====================
 
@@ -266,6 +281,23 @@ protected:
 	UPROPERTY()
 	TMap<FName, TWeakObjectPtr<APlayerController>> RoleAssignments;
 
+	/** 音频广播通道（服务器懒生成、随 GameState 所在关卡销毁；客户端侧为空） */
+	UPROPERTY(Transient)
+	TObjectPtr<ATaskAudioBroadcaster> AudioBroadcaster;
+
+	/** 等待首个玩家进场期间暂存的任务配表（LoadAndStartTask 在无玩家时的挂起状态） */
+	UPROPERTY(Transient)
+	TObjectPtr<UPrimaryTaskDataAsset> PendingTaskAsset;
+
+	/** 等待首个玩家进场用的轮询定时器 */
+	FTimerHandle WaitForPlayerTimerHandle;
+
+	/** 步骤延迟启动的定时器（DelayBeforeStart 到期后统一启动全部任务） */
+	FTimerHandle StepStartDelayTimerHandle;
+
+	/** 步骤延迟到期回调：统一启动当前步骤已实例化的全部任务 */
+	void StartPendingStepTasks();
+
 	/** 已占用身份（复制到客户端，供 UI 置灰/显示） */
 	UPROPERTY(ReplicatedUsing = OnRep_OccupiedRoles, BlueprintReadOnly, Category = "TaskSequencer|Participants")
 	TArray<FName> ReplicatedOccupiedRoles;
@@ -284,6 +316,9 @@ protected:
 
 	/** 执行指定步骤 */
 	void ExecuteStep(int32 StepIndex);
+
+	/** 轮询等待首个玩家进场，进场后继续执行挂起的 LoadAndStartTask */
+	void RetryPendingTaskLoad();
 
 	/** 所有活跃任务都结束了吗？ */
 	void CheckStepCompletion();

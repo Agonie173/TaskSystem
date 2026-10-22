@@ -3,9 +3,11 @@
 #include "MultipleTask/TaskSequencerComponent.h"
 #include "MultipleTask/TaskItems/MultipleTaskBase.h"
 #include "MultipleTask/UI/TaskPanelChannelComponent.h"
+#include "MultipleTask/TaskAudioBroadcaster.h"
 #include "MultipleTask/Score/ScoreComponent.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
 #include "Net/UnrealNetwork.h"
@@ -14,6 +16,16 @@ UTaskSequencerComponent::UTaskSequencerComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	SetIsReplicatedByDefault(true);
+}
+
+void UTaskSequencerComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// 立即生成音频广播通道（仅服务器侧生效，客户端调用返回空）：
+	// 动态生成的复制 Actor 必须先于玩家进场存在，客户端连接时通道才随连接初始化建立；
+	// 否则首次播放时的 Multicast RPC 会因客户端尚未收到该 Actor 而被静默丢弃（Reliable 也不补发）
+	GetAudioBroadcaster();
 }
 
 void UTaskSequencerComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -49,6 +61,24 @@ void UTaskSequencerComponent::LoadAndStartTask(UPrimaryTaskDataAsset* InTaskAsse
 	if (!InTaskAsset)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] LoadAndStartTask failed: TaskAsset is null"));
+		return;
+	}
+
+	// 玩家不足（DS 启动即加载 / LS 下远程客户端尚未连接的典型情形）：挂起等待。
+	// 否则受众解析（面板/提示/Widget/音频）全部落空，客户端也收不到任何 Multicast——
+	// 复制通道未建立时 RPC 会被静默丢弃（Reliable 也不会补发）。
+	// LS 的盲区：host 玩家启动瞬间就存在，Participants/GetNumPlayers 都非零，
+	// 必须按配表的 MinPlayersToStart（含 host 在内的期望总人数）等待
+	UWorld* World = GetWorld();
+	const int32 MinPlayers = FMath::Max(1, InTaskAsset->MinPlayersToStart);
+	const int32 CurrentPlayers = World && World->GetAuthGameMode() ? World->GetAuthGameMode()->GetNumPlayers() : 0;
+	if (World && !World->IsNetMode(NM_Standalone) && CurrentPlayers < MinPlayers)
+	{
+		PendingTaskAsset = InTaskAsset;
+		UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] Players %d/%d, task load deferred until enough players join"),
+			CurrentPlayers, MinPlayers);
+		World->GetTimerManager().SetTimer(WaitForPlayerTimerHandle, this,
+			&UTaskSequencerComponent::RetryPendingTaskLoad, 0.5f, true);
 		return;
 	}
 
@@ -111,8 +141,53 @@ void UTaskSequencerComponent::LoadAndStartTask(UPrimaryTaskDataAsset* InTaskAsse
 	ExecuteStep(0);
 }
 
+void UTaskSequencerComponent::RetryPendingTaskLoad()
+{
+	// 挂起配表已被清（StopAllTasks）时停掉轮询
+	UPrimaryTaskDataAsset* Asset = PendingTaskAsset.Get();
+	UWorld* World = GetWorld();
+	if (!Asset || !World)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(WaitForPlayerTimerHandle);
+		}
+		PendingTaskAsset = nullptr;
+		return;
+	}
+
+	// 玩家数（GameMode 统计，含 host）未达配表要求则继续等
+	if (!World->GetAuthGameMode() || World->GetAuthGameMode()->GetNumPlayers() < FMath::Max(1, Asset->MinPlayersToStart))
+	{
+		return;
+	}
+
+	World->GetTimerManager().ClearTimer(WaitForPlayerTimerHandle);
+	PendingTaskAsset = nullptr;
+	UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Enough players joined (%d), starting deferred task"), World->GetAuthGameMode()->GetNumPlayers());
+
+	LoadAndStartTask(Asset);
+}
+
 void UTaskSequencerComponent::StopAllTasks()
 {
+	// 取消"等待首个玩家"的挂起加载（若有）
+	if (PendingTaskAsset)
+	{
+		PendingTaskAsset = nullptr;
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(WaitForPlayerTimerHandle);
+		}
+		UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Cancelled deferred task load"));
+	}
+
+	// 取消步骤延迟启动定时器（若有）
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(StepStartDelayTimerHandle);
+	}
+
 	// 必须先停止运行标记，否则 EndTask 广播会触发 CheckStepCompletion，
 	// 在遍历过程中推进到下一步（会清空/重建 ActiveTasks 导致迭代器失效）
 	bIsRunning = false;
@@ -244,7 +319,12 @@ bool UTaskSequencerComponent::RegisterParticipant(APlayerController* PC)
 		*PC->GetName(), Participants.Num());
 
 	// 提前创建面板通道：保证客户端 UI 在第一个面板到达前就能绑定事件
-	UTaskPanelChannelComponent::FindOrCreateChannel(PC);
+	if (UTaskPanelChannelComponent* Channel = UTaskPanelChannelComponent::FindOrCreateChannel(PC))
+	{
+		// 绑定自定义事件转发：客户端语音识别等结果经通道上报后路由到当前活跃任务
+		Channel->OnCustomEventSubmitted.RemoveDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
+		Channel->OnCustomEventSubmitted.AddDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
+	}
 	return true;
 }
 
@@ -504,6 +584,26 @@ void UTaskSequencerComponent::ForwardOverlapEnd(AActor* OverlappedActor, AActor*
 	}
 }
 
+void UTaskSequencerComponent::ForwardCustomEvent(APlayerController* PC, FName EventId, const FString& Payload)
+{
+	if (!HasAuthorityForTask() || EventId.IsNone())
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("[TaskSequencer] CustomEvent forwarded: PC=%s event=%s payload len=%d"),
+		*GetNameSafe(PC), *EventId.ToString(), Payload.Len());
+
+	TArray<TObjectPtr<UMultipleTaskBase>> Snapshot = ActiveTasks;
+	for (UMultipleTaskBase* Task : Snapshot)
+	{
+		if (Task && !Task->bTaskEnded)
+		{
+			Task->OnCustomEvent(PC, EventId, Payload);
+		}
+	}
+}
+
 // ==================== 辅助查询 ====================
 
 APawn* UTaskSequencerComponent::GetPawnByRoleTag(FName RoleTag) const
@@ -574,6 +674,36 @@ TArray<APawn*> UTaskSequencerComponent::GetAllPlayerPawns() const
 		}
 	}
 	return Result;
+}
+
+ATaskAudioBroadcaster* UTaskSequencerComponent::GetAudioBroadcaster()
+{
+	// 已生成直接复用（服务器与客户端都可能有缓存，客户端侧不会走生成分支）
+	if (AudioBroadcaster)
+	{
+		return AudioBroadcaster;
+	}
+
+	// 仅服务器侧生成（DS/Listen/单机）；客户端只接收 Multicast，不需要通道实例。
+	// UWorld 上没有 AActor::HasAuthority，网络模式判定用 IsNetMode（PIE 与打包构建均正确）
+	UWorld* World = GetWorld();
+	if (!World || World->IsNetMode(NM_Client))
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = GetOwner();
+	AudioBroadcaster = World->SpawnActor<ATaskAudioBroadcaster>(ATaskAudioBroadcaster::StaticClass(), SpawnParams);
+	if (AudioBroadcaster)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Spawned audio broadcaster %s"), *AudioBroadcaster->GetName());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TaskSequencer] Failed to spawn audio broadcaster, client-side audio will be silent"));
+	}
+	return AudioBroadcaster;
 }
 
 FName UTaskSequencerComponent::GetRoleTagByPawn(APawn* Pawn) const
@@ -648,7 +778,12 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 
 	// 清理上一步的运行时实例：先结束残留任务——阻塞类早已自行 EndTask（幂等无副作用），
 	// 实际被这里收尾的是纯展示/提示类非阻塞任务（UIPanelDisplay / WidgetDisplay），
-	// 它们的 UI 组件在各自 EndTask 里统一销毁
+	// 它们的 UI 组件在各自 EndTask 里统一销毁；
+	// 同时作废上一步可能仍在挂起的步骤延迟定时器
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(StepStartDelayTimerHandle);
+	}
 	for (UMultipleTaskBase* OldTask : ActiveTasks)
 	{
 		if (OldTask)
@@ -698,7 +833,33 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 		ActiveTasks.Add(TaskInstance);
 	}
 
-	// 第二阶段：统一启动（任务可能在 StartTask 内立刻结束，此时计数是完整的）
+	// 第二阶段：整个步骤按配表延迟统一启动（DelayBeforeStart = 0 时立即启动）。
+	// 延迟期间所有任务尚未 StartTask，阻塞任务未结束 → CheckStepCompletion 不会提前推进，
+	// 即延迟自然计入步骤时间轴
+	const float StepDelay = FMath::Max(Step.DelayBeforeStart, 0.f);
+	UWorld* World = GetWorld();
+	if (StepDelay > 0.f && World)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[TaskSequencer] Step %d delayed %.2fs before start"), StepIndex, StepDelay);
+		World->GetTimerManager().SetTimer(StepStartDelayTimerHandle, FTimerDelegate::CreateWeakLambda(this, [WeakThis = TWeakObjectPtr<UTaskSequencerComponent>(this)]()
+		{
+			if (WeakThis.IsValid())
+			{
+				WeakThis->StartPendingStepTasks();
+			}
+		}), StepDelay, false);
+	}
+	else
+	{
+		StartPendingStepTasks();
+	}
+	bStepStarting = false;
+}
+
+void UTaskSequencerComponent::StartPendingStepTasks()
+{
+	// 步骤延迟到期（或无延迟）：统一启动当前步骤已实例化的全部任务
+	//（任务可能在 StartTask 内立刻结束，此时计数是完整的）
 	for (UMultipleTaskBase* Task : ActiveTasks)
 	{
 		if (Task)
@@ -707,7 +868,6 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 			Task->StartTask();
 		}
 	}
-	bStepStarting = false;
 
 	CheckStepCompletion();
 }
