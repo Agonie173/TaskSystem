@@ -62,23 +62,14 @@ bool UMultipleTask_TagMonitor::AreAllRolesSatisfied() const
 
 bool UMultipleTask_TagMonitor::IsRoleSatisfied(FName RoleTag) const
 {
-<<<<<<< HEAD
 	const FTagList* RequiredTags = MonitoredRoles.Find(RoleTag);
 	if (!RequiredTags || RequiredTags->Tags.Num() == 0)
-=======
-	const TArray<FName>* RequiredTags = MonitoredRoles.Find(RoleTag);
-	if (!RequiredTags || RequiredTags->Num() == 0)
->>>>>>> 8b9600870b9f94d6838e29841ac984c982b05739
 	{
 		return true;
 	}
 
 	APawn* Pawn = FindPawnByRoleTag(RoleTag);
-<<<<<<< HEAD
 	return IsPawnTagged(Pawn, RequiredTags->Tags);
-=======
-	return IsPawnTagged(Pawn, *RequiredTags);
->>>>>>> 8b9600870b9f94d6838e29841ac984c982b05739
 }
 
 TArray<FName> UMultipleTask_TagMonitor::GetUnsatisfiedRoles() const
