@@ -3,7 +3,6 @@
 #include "MultipleTask/TaskItems/MultipleTask_EditActorTag.h"
 #include "MultipleTask/TaskSequencerComponent.h"
 #include "MultipleTask/TaskAudioBroadcaster.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 

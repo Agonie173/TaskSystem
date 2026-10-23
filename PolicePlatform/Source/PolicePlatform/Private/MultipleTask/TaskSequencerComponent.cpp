@@ -325,6 +325,18 @@ bool UTaskSequencerComponent::RegisterParticipant(APlayerController* PC)
 		Channel->OnCustomEventSubmitted.RemoveDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
 		Channel->OnCustomEventSubmitted.AddDynamic(this, &UTaskSequencerComponent::ForwardCustomEvent);
 	}
+
+	// 广播玩家注册事件，供监听型任务（PlayerListener 等）感知新玩家加入
+	if (APawn* Pawn = PC->GetPawn())
+	{
+		OnPlayerRegistered.Broadcast(PC, Pawn);
+	}
+	else
+	{
+		// Pawn 尚未占有也广播（参数为空），监听方需自行等待 Pawn 可用
+		OnPlayerRegistered.Broadcast(PC, nullptr);
+	}
+
 	return true;
 }
 

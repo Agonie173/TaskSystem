@@ -19,6 +19,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTaskStepCompleted, int32, StepInd
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAllStepsCompleted);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnRoleOccupancyChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTaskChoiceMade, FName, ChoiceId, APlayerController*, Player);
+/**
+ * 玩家被注册为参训玩家时广播。
+ * Pawn 参数可能为空（玩家刚 PostLogin 尚未占有 Pawn）——监听方需自行在 Pawn 可用后再做处理。
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPlayerRegistered, APlayerController*, PC, APawn*, Pawn);
 
 /**
  * 任务序列驱动器：挂在 GameState 上，服务器权威。
@@ -246,11 +251,19 @@ public:
 	FOnRoleOccupancyChanged OnRoleOccupancyChanged;
 
 	/**
-	 * 面板选择结果（如结束训练时的“返回列表/重新训练”）。
+	 * 面板选择结果（如结束训练时的"返回列表/重新训练"）。
 	 * 任务系统不直接切场景/重开，只把 ChoiceId 抛给框架，由框架决定后续行为。
 	 */
 	UPROPERTY(BlueprintReadOnly, BlueprintAssignable, Category = "TaskSequencer|Events")
 	FOnTaskChoiceMade OnTaskChoiceMade;
+
+	/**
+	 * 玩家被注册为参训玩家时广播（RegisterParticipant 成功后触发）。
+	 * Pawn 可能为空（刚 PostLogin 尚未占有 Pawn）——监听方需自行等待 Pawn 可用。
+	 * 用于需要感知"新玩家加入"的监听型任务（如 PlayerListener）。
+	 */
+	UPROPERTY(BlueprintReadOnly, BlueprintAssignable, Category = "TaskSequencer|Events")
+	FOnPlayerRegistered OnPlayerRegistered;
 
 protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
