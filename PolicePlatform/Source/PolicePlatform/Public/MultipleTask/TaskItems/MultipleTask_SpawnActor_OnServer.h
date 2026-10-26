@@ -14,8 +14,7 @@ class AActor;
  *
  * 生命周期：StartTask 只负责生成，任务保持运行直到步骤被推进——步骤内其他任务全部
  * 结束后 Sequencer 的清理段会调用 EndTask，此时按 bDestroyOnStepEnd 决定删除还是
- * 保留生成的 Actor（保留的交给后续流程使用或手动清理）。与 UIPanelDisplay /
- * WidgetDisplay 同属非阻塞展示类任务。
+ * 保留生成的 Actor（保留的交给后续流程使用或手动清理）。与 WidgetDisplay 同属非阻塞展示类任务。
  *
  * 复制语义：生成后自动 SetReplicates(true) + SetReplicateMovement(true)——Actor 蓝图
  * 本身无需开启复制（实例级设置，不污染类默认值；同一个类可被 OnClient 任务以

@@ -73,7 +73,7 @@ public:
 	// ==================== 步骤完成语义 ====================
 	/**
 	 * 本任务结束后是否阻塞步骤推进。
-	 * 默认 true（阻塞），只有纯展示类面板（UIPanelDisplay）等非阻塞任务重写返回 false。
+	 * 默认 true（阻塞），纯展示类非阻塞任务（如 WidgetDisplay）重写返回 false。
 	 * Sequencer 的 CheckStepCompletion 只等所有 ShouldBlockStepCompletion()==true 的任务 EndTask。
 	 */
 	virtual bool ShouldBlockStepCompletion() const { return true; }

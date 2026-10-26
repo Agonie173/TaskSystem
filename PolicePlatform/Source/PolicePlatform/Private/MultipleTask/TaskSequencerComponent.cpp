@@ -92,7 +92,7 @@ void UTaskSequencerComponent::LoadAndStartTask(UPrimaryTaskDataAsset* InTaskAsse
 
 	// 简化接入兜底：外层框架若没有注册流程，则把当前所有 PlayerController 视为参训玩家。
 	// 否则多人局 Participants 为空：面板受众为 0（谁都不下发）、
-	// WaitForConfirm/EquipmentConfirm 的“全员确认”永远无法达成。
+	// 等待确认类任务（待重做） 的“全员确认”永远无法达成。
 	if (Participants.Num() == 0)
 	{
 		int32 AutoRegistered = 0;
@@ -789,7 +789,7 @@ void UTaskSequencerComponent::ExecuteStep(int32 StepIndex)
 	bStepStarting = true;
 
 	// 清理上一步的运行时实例：先结束残留任务——阻塞类早已自行 EndTask（幂等无副作用），
-	// 实际被这里收尾的是纯展示/提示类非阻塞任务（UIPanelDisplay / WidgetDisplay），
+	// 实际被这里收尾的是纯展示/提示类非阻塞任务（UIPanelDisplay（已删除，待重做） / WidgetDisplay），
 	// 它们的 UI 组件在各自 EndTask 里统一销毁；
 	// 同时作废上一步可能仍在挂起的步骤延迟定时器
 	if (UWorld* World = GetWorld())
@@ -891,7 +891,7 @@ void UTaskSequencerComponent::CheckStepCompletion()
 		return;
 	}
 
-	// 只等阻塞任务结束——非阻塞任务（如 UIPanelDisplay）的存活不影响步骤推进
+	// 只等阻塞任务结束——非阻塞任务（如 UIPanelDisplay（已删除，待重做））的存活不影响步骤推进
 	int32 BlockingTasksRemaining = 0;
 	for (UMultipleTaskBase* Task : ActiveTasks)
 	{

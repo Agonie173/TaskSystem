@@ -15,7 +15,7 @@ public class PolicePlatform : ModuleRules
 
 		// Core/CoreUObject/Engine：UE 基础（UObject/Actor/组件/网络复制等，必备）。
 		// InputCore：输入相关基础类型（UI 输入/按键定义的默认依赖）。
-		// AIModule：MultipleTask_NPCBehavior 任务用 AAIController / MoveTo 驱动 NPC 行为。
+		// AIModule：为后续重做的 NPC 行为任务预留（AAIController / MoveTo）。
 		// UMG：TaskWorldWidgetComponent / MultipleTask_WidgetDisplay 直接引用
 		//      UUserWidget / UWidgetComponent（世界空间提示 Widget 及其类复制）。
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "AIModule", "UMG" });

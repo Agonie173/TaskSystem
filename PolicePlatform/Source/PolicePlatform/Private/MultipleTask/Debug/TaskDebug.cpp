@@ -16,25 +16,13 @@
 #include "MultipleTask/TaskSequencerComponent.h"
 #include "MultipleTask/Data/PrimaryTaskDataAsset.h"
 #include "MultipleTask/TaskItems/MultipleTaskBase.h"
-#include "MultipleTask/TaskItems/MultipleTask_UIPanelDisplay.h"
 #include "MultipleTask/TaskItems/MultipleTask_WidgetDisplay.h"
 #include "MultipleTask/TaskItems/MultipleTask_SpawnActor_OnServer.h"
 #include "MultipleTask/TaskItems/MultipleTask_SpawnActor_OnClient.h"
 #include "MultipleTask/TaskItems/MultipleTask_EditActorTag.h"
-#include "MultipleTask/TaskItems/MultipleTask_WaitForConfirm.h"
-#include "MultipleTask/TaskItems/MultipleTask_RoleSelect.h"
 #include "MultipleTask/TaskItems/MultipleTask_MultiStationArrival.h"
-#include "MultipleTask/TaskItems/MultipleTask_StationConfirm.h"
 #include "MultipleTask/TaskItems/MultipleTask_GuideToLocation.h"
-#include "MultipleTask/TaskItems/MultipleTask_EquipmentInteract.h"
-#include "MultipleTask/TaskItems/MultipleTask_EquipmentConfirm.h"
-#include "MultipleTask/TaskItems/MultipleTask_EquipmentAudit.h"
-#include "MultipleTask/TaskItems/MultipleTask_ZoneMonitor.h"
-#include "MultipleTask/TaskItems/MultipleTask_SearchInspection.h"
-#include "MultipleTask/TaskItems/MultipleTask_NPCBehavior.h"
 #include "MultipleTask/TaskItems/MultipleTask_MediaPlayback.h"
-#include "MultipleTask/TaskItems/MultipleTask_VoiceRecognitionWait.h"
-#include "MultipleTask/TaskItems/MultipleTask_EndTraining.h"
 #include "MultipleTask/Score/ScoreComponent.h"
 #include "MultipleTask/UI/TaskPanelChannelComponent.h"
 
@@ -169,78 +157,10 @@ namespace
 			? FString::Printf(TEXT("Step[%02d] %s / %s"), StepIndex, *Step->StepId.ToString(), *Task->GetClass()->GetName())
 			: FString::Printf(TEXT("Step[%02d] 运行中 / %s"), StepIndex, *Task->GetClass()->GetName());
 
-		// ---------- 面板展示 ----------
-		if (const UMultipleTask_UIPanelDisplay* Panel = Cast<UMultipleTask_UIPanelDisplay>(Task))
-		{
-			// 非阻塞任务：AutoCloseDelay=0（跟随步骤生命周期）与 >0（定时关闭）均为合法配置
-			if (Panel->AutoCloseDelay > 0.f && Panel->AutoCloseDelay < 0.5f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					TEXT("AutoCloseDelay 过短（<0.5s），面板可能一闪而过"));
-			}
-		}
-		// ---------- 等待确认 ----------
-		else if (const UMultipleTask_WaitForConfirm* Confirm = Cast<UMultipleTask_WaitForConfirm>(Task))
-		{
-			if (Confirm->ConfirmButtonText.IsEmpty())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-					TEXT("ConfirmButtonText 为空，不会生成确认按钮，永远无法完成"));
-			}
-			if (Confirm->ConfirmPolicy == EConfirmPolicy::SpecificRoles && Confirm->SpecificRoleTags.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-					TEXT("ConfirmPolicy = SpecificRoles 但 SpecificRoleTags 为空"));
-			}
-		}
-		// ---------- 身份选择 ----------
-		else if (const UMultipleTask_RoleSelect* RoleSelect = Cast<UMultipleTask_RoleSelect>(Task))
-		{
-			if (RoleSelect->Roles.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("Roles 为空，玩家无法选择身份"));
-			}
-			else
-			{
-				TSet<FName> SeenRoles;
-				for (const FRoleDefinition& Role : RoleSelect->Roles)
-				{
-					if (Role.RoleTag.IsNone())
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("Roles 中存在空 RoleTag"));
-					}
-					else if (SeenRoles.Contains(Role.RoleTag))
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("RoleTag %s 重复"), *Role.RoleTag.ToString()));
-					}
-					else
-					{
-						SeenRoles.Add(Role.RoleTag);
-					}
-				}
-
-				if (RoleSelect->Roles.Num() < 3)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Info, Loc,
-						TEXT("Roles 少于 3 个，标准流程需要 3 名参训玩家各选一个身份"));
-				}
-			}
-		}
 		// ---------- 多人同时到位 ----------
-		else if (const UMultipleTask_MultiStationArrival* Arrival = Cast<UMultipleTask_MultiStationArrival>(Task))
+		if (const UMultipleTask_MultiStationArrival* Arrival = Cast<UMultipleTask_MultiStationArrival>(Task))
 		{
 			ValidateStationRequirements(World, Arrival->Requirements, Loc, Issues);
-		}
-		// ---------- 就位确认 ----------
-		else if (const UMultipleTask_StationConfirm* StationConfirm = Cast<UMultipleTask_StationConfirm>(Task))
-		{
-			ValidateStationRequirements(World, StationConfirm->Requirements, Loc, Issues);
-			if (StationConfirm->ConfirmButtonText.IsEmpty())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-					TEXT("ConfirmButtonText 为空，面板上没有确认按钮"));
-			}
 		}
 		// ---------- 指引到位置 ----------
 		else if (const UMultipleTask_GuideToLocation* Guide = Cast<UMultipleTask_GuideToLocation>(Task))
@@ -263,197 +183,6 @@ namespace
 			if (Guide->bShowMarker && Guide->MarkerClass.IsNull())
 			{
 				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("bShowMarker = true 但 MarkerClass 为空"));
-			}
-		}
-		// ---------- 装备检查 ----------
-		else if (const UMultipleTask_EquipmentInteract* EquipInteract = Cast<UMultipleTask_EquipmentInteract>(Task))
-		{
-			if (EquipInteract->Requirements.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("Requirements 为空，任务无法完成"));
-			}
-			for (int32 Index = 0; Index < EquipInteract->Requirements.Num(); ++Index)
-			{
-				if (EquipInteract->Requirements[Index].RequiredTags.Num() == 0)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("Requirements[%d] 的 RequiredTags 为空"), Index));
-				}
-			}
-			if (EquipInteract->CheckInterval < 0.1f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("CheckInterval 小于 0.1 秒，轮询过于频繁"));
-			}
-		}
-		// ---------- 自主选装确认 ----------
-		else if (const UMultipleTask_EquipmentConfirm* EquipConfirm = Cast<UMultipleTask_EquipmentConfirm>(Task))
-		{
-			if (EquipConfirm->StandardEquipment.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					TEXT("StandardEquipment 为空，无法确定需要等哪些身份确认，任务可能立即结束"));
-			}
-			if (EquipConfirm->EquipmentTagPool.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					TEXT("EquipmentTagPool 为空，面板将不显示任何装备"));
-			}
-			if (EquipConfirm->ConfirmButtonText.IsEmpty())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("ConfirmButtonText 为空，不会生成确认按钮"));
-			}
-			if (EquipConfirm->EquipmentLockedTag.IsNone())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("EquipmentLockedTag 为空，装备不会被锁定"));
-			}
-		}
-		// ---------- 装备核对 ----------
-		else if (const UMultipleTask_EquipmentAudit* EquipAudit = Cast<UMultipleTask_EquipmentAudit>(Task))
-		{
-			if (EquipAudit->StandardEquipment.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("StandardEquipment 为空，无法核对装备"));
-			}
-			if (EquipAudit->EquipmentTagPool.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					TEXT("EquipmentTagPool 为空，可能把身份等非装备 Tag 误判为装备"));
-			}
-			for (int32 Index = 0; Index < EquipAudit->StandardEquipment.Num(); ++Index)
-			{
-				if (EquipAudit->StandardEquipment[Index].RequiredTags.Num() == 0)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("StandardEquipment[%d] 的 RequiredTags 为空"), Index));
-				}
-			}
-		}
-		// ---------- 区域监控（含警戒待命 / 安全距离） ----------
-		else if (const UMultipleTask_ZoneMonitor* Zone = Cast<UMultipleTask_ZoneMonitor>(Task))
-		{
-			if (Zone->ZoneActorTag.IsNone())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc,
-					TEXT("ZoneActorTag 为空，任务启动后会立即结束，步骤被跳过"));
-			}
-			else if (World && !ActorWithTagExists(World, Zone->ZoneActorTag))
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					FString::Printf(TEXT("场景中找不到带 Tag %s 的区域/嫌疑人"), *Zone->ZoneActorTag.ToString()));
-			}
-
-			if (Zone->RequiredCompliantDuration <= 0.f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					TEXT("RequiredCompliantDuration <= 0，必须由外部调用 FinishMonitoring 才会结束"));
-			}
-			if (Zone->WarningContent.IsEmpty())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Info, Loc, TEXT("WarningContent 为空，违规提示没有正文"));
-			}
-		}
-		// ---------- 搜身检查 ----------
-		else if (const UMultipleTask_SearchInspection* Search = Cast<UMultipleTask_SearchInspection>(Task))
-		{
-			if (Search->BodyParts.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("BodyParts 为空，任务无法完成"));
-			}
-			for (int32 Index = 0; Index < Search->BodyParts.Num(); ++Index)
-			{
-				if (Search->BodyParts[Index].CollisionBoxTag.IsNone())
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("BodyParts[%d] 的 CollisionBoxTag 为空"), Index));
-				}
-			}
-
-			if (World && !ActorWithTagExists(World, Search->TargetActorTag))
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-					FString::Printf(TEXT("场景中找不到带 Tag %s 的搜身目标"), *Search->TargetActorTag.ToString()));
-			}
-		}
-		// ---------- NPC 行为 ----------
-		else if (const UMultipleTask_NPCBehavior* NPC = Cast<UMultipleTask_NPCBehavior>(Task))
-		{
-			if (NPC->bUseExistingNPC)
-			{
-				if (NPC->ExistingNPCTag.IsNone())
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("接管已有 NPC 但 ExistingNPCTag 为空"));
-				}
-				else if (World && !ActorWithTagExists(World, NPC->ExistingNPCTag))
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("场景中找不到带 Tag %s 的已有 NPC"), *NPC->ExistingNPCTag.ToString()));
-				}
-			}
-			else if (NPC->NPCClass.IsNull())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("NPCClass 为空，无法生成 NPC"));
-			}
-
-			if (NPC->NPCCount <= 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("NPCCount <= 0"));
-			}
-			if (NPC->BehaviorSequence.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("BehaviorSequence 为空，任务会立即结束"));
-			}
-
-			for (int32 Index = 0; Index < NPC->BehaviorSequence.Num(); ++Index)
-			{
-				const FNPCBehaviorNode& Node = NPC->BehaviorSequence[Index];
-
-				switch (Node.NodeType)
-				{
-				case ENPCBehaviorType::MoveTo:
-					if (Node.TargetLocationTag.IsNone() && Node.TargetLocation.IsNearlyZero())
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Info, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] 移动目标为原点且没有 Tag"), Index));
-					}
-					break;
-				case ENPCBehaviorType::Wait:
-					if (Node.WaitDuration < 0.f)
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] WaitDuration < 0"), Index));
-					}
-					break;
-				case ENPCBehaviorType::PlayAnim:
-					if (!Node.AnimToPlay)
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] 未配置 AnimToPlay，该节点会被跳过"), Index));
-					}
-					break;
-				case ENPCBehaviorType::PlayAudio:
-					if (!Node.AudioToPlay)
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] 未配置 AudioToPlay，该节点会被跳过"), Index));
-					}
-					break;
-				case ENPCBehaviorType::LookAt:
-					if (Node.LookAtTargetTag.IsNone())
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] LookAtTargetTag 为空"), Index));
-					}
-					break;
-				case ENPCBehaviorType::SetAIState:
-					if (Node.AIStateName.IsNone())
-					{
-						AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-							FString::Printf(TEXT("BehaviorSequence[%d] AIStateName 为空"), Index));
-					}
-					break;
-				default:
-					break;
-				}
 			}
 		}
 		// ---------- 媒体播放 ----------
@@ -494,44 +223,7 @@ namespace
 					}
 				}
 			}
-			// ---------- 语音识别 ----------
-		else if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
-		{
-			// 注意：下方提示文案与实际行为相反——MultipleTask_VoiceRecognitionWait 的
-			// 匹配逻辑里 RequiredKeyWords 为空意味着"不过滤"，任何语音都会判定通过，
-			// 并非"无法通过"。保留原文案仅为兼容既有输出，排查时以本注释为准。
-			if (Voice->RequiredKeyWords.Num() == 0)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Error, Loc, TEXT("RequiredKeyWords 为空，任何语音都无法通过"));
-			}
-
-			for (int32 Index = 0; Index < Voice->RequiredKeyWords.Num(); ++Index)
-			{
-				if (Voice->RequiredKeyWords[Index].Keyword.IsEmpty())
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc,
-						FString::Printf(TEXT("RequiredKeyWords[%d] 的关键词为空"), Index));
-				}
-			}
-
-			if (Voice->KeywordMatchPolicy == EKeywordMatchPolicy::Ratio && Voice->RequiredRatio <= 0.f)
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("Ratio 模式下 RequiredRatio <= 0"));
-			}
-			if (Voice->TotalDuration <= 0.f)
-				{
-					AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("TotalDuration <= 0，可能立即超时"));
-				}
-		}
-		// ---------- 结束训练 ----------
-		else if (const UMultipleTask_EndTraining* EndTraining = Cast<UMultipleTask_EndTraining>(Task))
-		{
-			if (EndTraining->ReturnToListButtonText.IsEmpty() && EndTraining->RestartButtonText.IsEmpty())
-			{
-				AddIssue(Issues, ETaskDebugSeverity::Warning, Loc, TEXT("两个按钮文字都为空"));
-			}
-		}
-		// ---------- 世界空间 Widget 提示 ----------
+			// ---------- 世界空间 Widget 提示 ----------
 		else if (const UMultipleTask_WidgetDisplay* WidgetTask = Cast<UMultipleTask_WidgetDisplay>(Task))
 		{
 			if (WidgetTask->WidgetClass == nullptr)
@@ -596,20 +288,9 @@ namespace
 		}
 
 		// ---------- 错误码 → 评分规则 ----------
+		// （原 ZoneMonitor/EquipmentAudit/VoiceRecognitionWait 错误码校验已随任务类删除一并移除，
+		//   新任务类重做时按同样模式在此追加）
 		TArray<FName> ErrorCodes;
-		if (const UMultipleTask_ZoneMonitor* Zone = Cast<UMultipleTask_ZoneMonitor>(Task))
-		{
-			ErrorCodes.Add(Zone->ViolationErrorCode);
-		}
-		if (const UMultipleTask_EquipmentAudit* EquipAudit = Cast<UMultipleTask_EquipmentAudit>(Task))
-		{
-			ErrorCodes.Add(EquipAudit->MissingEquipmentErrorCode);
-			ErrorCodes.Add(EquipAudit->WrongEquipmentErrorCode);
-		}
-		if (const UMultipleTask_VoiceRecognitionWait* Voice = Cast<UMultipleTask_VoiceRecognitionWait>(Task))
-		{
-			ErrorCodes.Add(Voice->TimeoutErrorCode);
-		}
 
 		for (FName Code : ErrorCodes)
 		{
@@ -699,8 +380,6 @@ int32 FTaskDebug::ValidateAsset(UWorld* World, const UPrimaryTaskDataAsset* Asse
 				TEXT("ParallelTasks 为空，该步骤会被瞬间跳过"));
 		}
 
-		int32 PanelDisplayCount = 0;
-
 		for (const TObjectPtr<UMultipleTaskBase>& TaskPtr : Step.ParallelTasks)
 		{
 			UMultipleTaskBase* Task = TaskPtr;
@@ -710,18 +389,7 @@ int32 FTaskDebug::ValidateAsset(UWorld* World, const UPrimaryTaskDataAsset* Asse
 				continue;
 			}
 
-			if (Cast<UMultipleTask_UIPanelDisplay>(Task))
-			{
-				++PanelDisplayCount;
-			}
-
 			ValidateTask(World, Asset, StepIndex, &Step, Task, OutIssues);
-		}
-
-		if (PanelDisplayCount > 1)
-		{
-			AddIssue(OutIssues, ETaskDebugSeverity::Warning, StepLoc,
-				FString::Printf(TEXT("同一步骤内有 %d 个 UI 展示面板，会互相覆盖"), PanelDisplayCount));
 		}
 	}
 
@@ -1208,7 +876,6 @@ void FTaskDebugVisualizer::Tick(float DeltaTime)
 	}
 
 	// ---------- 当前任务引用的关键 Tag ----------
-	TSet<FName> ZoneTags;
 	TSet<FName> StationTags;
 	TSet<FName> TargetTags;
 
@@ -1222,10 +889,6 @@ void FTaskDebugVisualizer::Tick(float DeltaTime)
 				continue;
 			}
 
-			if (const UMultipleTask_ZoneMonitor* Zone = Cast<UMultipleTask_ZoneMonitor>(Task))
-			{
-				ZoneTags.Add(Zone->ZoneActorTag);
-			}
 			if (const UMultipleTask_MultiStationArrival* Arrival = Cast<UMultipleTask_MultiStationArrival>(Task))
 			{
 				for (const FRoleStationPair& Pair : Arrival->Requirements)
@@ -1233,20 +896,9 @@ void FTaskDebugVisualizer::Tick(float DeltaTime)
 					StationTags.Add(Pair.StationTag);
 				}
 			}
-			if (const UMultipleTask_StationConfirm* StationConfirm = Cast<UMultipleTask_StationConfirm>(Task))
-			{
-				for (const FRoleStationPair& Pair : StationConfirm->Requirements)
-				{
-					StationTags.Add(Pair.StationTag);
-				}
-			}
 			if (const UMultipleTask_GuideToLocation* Guide = Cast<UMultipleTask_GuideToLocation>(Task))
 			{
 				StationTags.Add(Guide->StationTag);
-			}
-			if (const UMultipleTask_SearchInspection* Search = Cast<UMultipleTask_SearchInspection>(Task))
-			{
-				TargetTags.Add(Search->TargetActorTag);
 			}
 		}
 	}
@@ -1287,7 +939,6 @@ void FTaskDebugVisualizer::Tick(float DeltaTime)
 		}
 	};
 
-	DrawTaggedBoxes(ZoneTags, FColor::Green);
 	DrawTaggedBoxes(StationTags, FColor::Cyan);
 	DrawTaggedBoxes(TargetTags, FColor::Yellow);
 
