@@ -21,6 +21,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTaskPanelActionSubmitted,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnTaskCustomEventSubmitted,
 	APlayerController*, PC, FName, EventId, const FString&, Payload);
 
+/** 服务器向客户端下发自定义事件（如任务状态广播），仅客户端本地 UI 收到 */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTaskCustomEventNotified,
+	FName, EventId, const FString&, Payload);
+
 /**
  * 玩家面板通道：挂在 PlayerState 上（由外层框架添加，缺少时服务器会自动创建）。
  *
@@ -84,6 +88,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
 	void HidePanel(FName PanelId = NAME_None);
 
+	/**
+	 * 服务器向该玩家下发自定义事件（任务状态广播等，如 3D 选择板状态同步）。
+	 * 仅服务器调用有效；客户端收到后广播 OnCustomEventNotified。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TaskPanel")
+	void NotifyCustomEvent(FName EventId, const FString& Payload);
+
 	// ==================== 客户端接口 ====================
 
 	/** 当前面板数据（客户端 UI 渲染用） */
@@ -124,6 +135,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
 	FOnTaskCustomEventSubmitted OnCustomEventSubmitted;
 
+	/** 服务器下发了自定义事件（仅客户端会广播，本地 UI/WorldActor 绑定） */
+	UPROPERTY(BlueprintAssignable, Category = "TaskPanel")
+	FOnTaskCustomEventNotified OnCustomEventNotified;
+
 protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -134,6 +149,10 @@ protected:
 	// 客户端自定义事件回传（Server RPC，可靠）
 	UFUNCTION(Server, Reliable)
 	void Server_SubmitCustomEvent(FName EventId, const FString& Payload);
+
+	// 服务器自定义事件下发（Client RPC，可靠）；监听服务器对本地玩家调用会在本地直接执行
+	UFUNCTION(Client, Reliable)
+	void ClientNotifyCustomEvent(FName EventId, const FString& Payload);
 
 	// 复制回调：向本地 UI 广播 OnPanelStateChanged；非专用服务器的服务器端写属性后需手动调用
 	UFUNCTION()

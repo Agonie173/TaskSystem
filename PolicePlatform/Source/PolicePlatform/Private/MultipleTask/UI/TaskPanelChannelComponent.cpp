@@ -62,6 +62,24 @@ UTaskPanelChannelComponent* UTaskPanelChannelComponent::FindOrCreateChannel(APla
 
 // ==================== 服务器接口 ====================
 
+void UTaskPanelChannelComponent::NotifyCustomEvent(FName EventId, const FString& Payload)
+{
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		return;
+	}
+
+	if (EventId.IsNone())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[TaskPanelChannel] NotifyCustomEvent rejected: EventId is None (owner %s)"),
+			*GetNameSafe(GetOwner()));
+		return;
+	}
+
+	// Client RPC：专用服务器路由到对应客户端；监听服务器/单机对本地玩家会在本地直接执行
+	ClientNotifyCustomEvent(EventId, Payload);
+}
+
 void UTaskPanelChannelComponent::ShowPanel(const FTaskPanelData& InPanel)
 {
 	if (GetOwnerRole() != ROLE_Authority)
@@ -189,6 +207,11 @@ void UTaskPanelChannelComponent::Server_SubmitPanelButton_Implementation(FName P
 void UTaskPanelChannelComponent::Server_SubmitCustomEvent_Implementation(FName EventId, const FString& Payload)
 {
 	SubmitCustomEventInternal(EventId, Payload);
+}
+
+void UTaskPanelChannelComponent::ClientNotifyCustomEvent_Implementation(FName EventId, const FString& Payload)
+{
+	OnCustomEventNotified.Broadcast(EventId, Payload);
 }
 
 void UTaskPanelChannelComponent::SubmitCustomEventInternal(FName EventId, const FString& Payload)
